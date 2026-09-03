@@ -84,18 +84,36 @@ class HeadSizeTests(unittest.TestCase):
         self.assertEqual(method, "ear_span")
         self.assertAlmostEqual(factor, 2.0, places=5)
 
-    def test_head_scaling_keeps_neck_fixed(self):
+    def test_face_scaling_keeps_neck_and_nose_fixed(self):
         body = body_with_unit(100.0, face_span=20.0)
         neck_before = body[pr.ROOT, :2].copy()
-        nose_before = np.linalg.norm(
-            body[pr.NOSE, :2] - body[pr.ROOT, :2])
+        nose_before = body[pr.NOSE, :2].copy()
+        eye_offset_before = np.linalg.norm(
+            body[pr.R_EYE, :2] - body[pr.NOSE, :2])
 
         scaled = pr.scale_head_keypoints(body, 1.5)
 
         np.testing.assert_array_equal(scaled[pr.ROOT, :2], neck_before)
-        nose_after = np.linalg.norm(
+        np.testing.assert_array_equal(scaled[pr.NOSE, :2], nose_before)
+        eye_offset_after = np.linalg.norm(
+            scaled[pr.R_EYE, :2] - scaled[pr.NOSE, :2])
+        self.assertAlmostEqual(
+            eye_offset_after, eye_offset_before * 1.5, places=5)
+
+    def test_neck_to_nose_fallback_scales_the_whole_head_chain(self):
+        body = body_with_unit(100.0, face_span=20.0)
+        neck_before = body[pr.ROOT, :2].copy()
+        nose_distance_before = np.linalg.norm(
+            body[pr.NOSE, :2] - body[pr.ROOT, :2])
+
+        scaled = pr.scale_head_keypoints(
+            body, 1.5, include_neck_to_nose=True)
+
+        np.testing.assert_array_equal(scaled[pr.ROOT, :2], neck_before)
+        nose_distance_after = np.linalg.norm(
             scaled[pr.NOSE, :2] - scaled[pr.ROOT, :2])
-        self.assertAlmostEqual(nose_after, nose_before * 1.5, places=5)
+        self.assertAlmostEqual(
+            nose_distance_after, nose_distance_before * 1.5, places=5)
 
     def test_foreshortening_does_not_shrink_head_joints(self):
         body = body_with_unit(100.0, face_span=2.0)
@@ -145,8 +163,11 @@ class HeadSizeTests(unittest.TestCase):
         output_ratio = (
             pr._face_extent(output_face)
             / pr._body_unit(output_body, "torso"))
+        output_neck_to_nose = np.linalg.norm(
+            output_body[pr.NOSE, :2] - output_body[pr.ROOT, :2])
 
         self.assertAlmostEqual(output_ratio, reference_ratio, places=5)
+        self.assertAlmostEqual(output_neck_to_nose, 40.0, places=5)
         self.assertIn("metric=face_landmarks", report)
 
 

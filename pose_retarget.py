@@ -305,13 +305,26 @@ def head_correction_factor(source_body, source_face, current_body,
     return factor, method, details
 
 
-def scale_head_keypoints(arr, factor):
-    """Uniformly scale COCO head joints around the neck attachment point."""
+def scale_head_keypoints(arr, factor, include_neck_to_nose=False):
+    """Scale face joints without lengthening the neck-to-nose segment.
+
+    A face-size correction should normally leave the nose where retargeting
+    placed it and scale eyes/ears around that nose.  Only the final
+    neck-to-nose fallback lacks a real face span, so it must scale the whole
+    head chain around the neck.
+    """
     out = arr.copy()
-    if not _valid(out, ROOT):
-        return out
-    pivot = out[ROOT, :2].copy()
-    for joint in HEAD_JOINTS:
+    if include_neck_to_nose:
+        if not _valid(out, ROOT):
+            return out
+        pivot = out[ROOT, :2].copy()
+        joints = HEAD_JOINTS
+    else:
+        if not _valid(out, NOSE):
+            return out
+        pivot = out[NOSE, :2].copy()
+        joints = (R_EYE, L_EYE, R_EAR, L_EAR)
+    for joint in joints:
         if _valid(out, joint):
             out[joint, :2] = pivot + (out[joint, :2] - pivot) * factor
     return out

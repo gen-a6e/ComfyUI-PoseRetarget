@@ -143,11 +143,15 @@ class PoseRetargetProportions:
                 correction, method, details = head_correction_factor(
                     source_body, source_face, out, face,
                     size_reference, head_scale)
-                out = scale_head_keypoints(out, correction)
-                if face is not None and _valid(out, ROOT_JOINT):
+                use_neck_pivot = method == "neck_to_nose"
+                out = scale_head_keypoints(
+                    out, correction,
+                    include_neck_to_nose=use_neck_pivot)
+                pivot_joint = ROOT_JOINT if use_neck_pivot else NOSE
+                if face is not None and _valid(out, pivot_joint):
                     extras["face_keypoints_2d"] = _apply_affine(
                         face, correction, np.zeros(2, dtype=np.float32),
-                        out[ROOT_JOINT, :2])
+                        out[pivot_joint, :2])
                 if details:
                     head_notes.append(
                         f"person {pi}: head_source={head_size_source}, "
