@@ -214,6 +214,48 @@ class HeadSizeTests(unittest.TestCase):
         self.assertIn("1 extra reference person", report)
         self.assertIn("1 extra driving person", report)
 
+    def test_node_outputs_sdpose_compatible_face_and_hand_fields(self):
+        reference_body = body_with_unit(100.0, face_span=30.0)
+        driving_body = body_with_unit(100.0, face_span=20.0)
+        driving_face = np.tile(dense_face(20.0, 30.0), (5, 1))[:68]
+        driving_face[:, :2] += driving_body[pr.NOSE, :2]
+
+        reference = [{
+            "canvas_width": 512,
+            "canvas_height": 512,
+            "people": [{
+                "pose_keypoints_2d": reference_body.reshape(-1).tolist(),
+            }],
+        }]
+        driving = [{
+            "canvas_width": 512,
+            "canvas_height": 512,
+            "people": [{
+                "pose_keypoints_2d": driving_body.reshape(-1).tolist(),
+                "face_keypoints_2d": driving_face.reshape(-1).tolist(),
+                "hand_left_keypoints_2d": None,
+                "hand_right_keypoints_2d": [None],
+            }],
+        }]
+
+        output, _ = load_node_class()().run(
+            reference, driving, "torso", "off", "neck",
+            1.0, 1.0, 1.0, 1.0,
+            "off", 0.15, 0.75, "off", 16)
+        person = output[0]["people"][0]
+
+        face = np.asarray(
+            person["face_keypoints_2d"], dtype=np.float32).reshape(70, 3)
+        left_hand = np.asarray(
+            person["hand_left_keypoints_2d"], dtype=np.float32).reshape(21, 3)
+        right_hand = np.asarray(
+            person["hand_right_keypoints_2d"], dtype=np.float32).reshape(21, 3)
+
+        self.assertEqual(np.count_nonzero(face[:68, 2]), 68)
+        self.assertEqual(np.count_nonzero(face[68:, 2]), 0)
+        self.assertEqual(np.count_nonzero(left_hand), 0)
+        self.assertEqual(np.count_nonzero(right_hand), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

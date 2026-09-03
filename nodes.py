@@ -12,6 +12,36 @@ from .pose_retarget import (
 )
 
 
+SDPOSE_REQUIRED_KEYPOINTS = {
+    "face_keypoints_2d": 70,
+    "hand_left_keypoints_2d": 21,
+    "hand_right_keypoints_2d": 21,
+}
+
+
+def _normalize_optional_keypoints(flat, count):
+    """Return a fixed-size, zero-padded field accepted by SDPose Draw."""
+    out = np.zeros((count, 3), dtype=np.float32)
+    if flat is None:
+        return out.reshape(-1).tolist()
+
+    try:
+        raw = np.asarray(flat, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return out.reshape(-1).tolist()
+
+    complete_points = raw.size // 3
+    if complete_points:
+        source = raw[:complete_points * 3].reshape(-1, 3)
+        take = min(count, len(source))
+        source = source[:take]
+        valid_rows = np.all(np.isfinite(source), axis=1)
+        valid_indices = np.flatnonzero(valid_rows)
+        out[valid_indices] = source[valid_indices]
+
+    return [round(float(v), 6) for v in out.reshape(-1)]
+
+
 class PoseRetargetProportions:
     """Joint angles from the driving pose, bone lengths from the reference."""
 
@@ -95,6 +125,9 @@ class PoseRetargetProportions:
             ignored_driving_people += max(0, len(people) - 1)
             person = people[0]
             new_frame["people"] = [person]
+            for key, count in SDPOSE_REQUIRED_KEYPOINTS.items():
+                person[key] = _normalize_optional_keypoints(
+                    person.get(key), count)
             drv = _to_pixels(person.get("pose_keypoints_2d"), w, h, drv_norm)
             if drv is not None:
                 out = retarget_body(ref, drv, ref_len, ref_unit, size_reference,

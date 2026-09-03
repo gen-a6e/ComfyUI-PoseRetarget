@@ -99,9 +99,15 @@ def _is_normalized(frames):
 
 
 def _to_pixels(flat, w, h, normalized):
-    if not flat:
+    if flat is None:
         return None
-    arr = np.asarray(flat, dtype=np.float32).reshape(-1, 3).copy()
+    try:
+        raw = np.asarray(flat, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if raw.size == 0 or raw.size % 3:
+        return None
+    arr = raw.reshape(-1, 3).copy()
     if normalized:
         arr[:, 0] *= w
         arr[:, 1] *= h
