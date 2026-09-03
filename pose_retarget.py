@@ -5,10 +5,9 @@ Takes joint ANGLES from a driving pose and BONE LENGTHS from a reference pose,
 so the resulting skeleton has the reference character's body proportions while
 striking the driving pose.
 
-Pure numpy + PIL. No cv2, no torch beyond what ComfyUI already provides.
+Pure numpy. No cv2, PIL, or torch dependency.
 """
 
-import math
 import numpy as np
 
 # ---------------------------------------------------------------- topology
@@ -41,19 +40,6 @@ NOSE = 0
 R_EYE, L_EYE = 14, 15
 R_EAR, L_EAR = 16, 17
 HEAD_JOINTS = (NOSE, R_EYE, L_EYE, R_EAR, L_EAR)
-
-LIMB_SEQ = [
-    [1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9],
-    [9, 10], [1, 11], [11, 12], [12, 13], [1, 0], [0, 14], [14, 16],
-    [0, 15], [15, 17],
-]
-
-COLORS = [
-    [255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0],
-    [85, 255, 0], [0, 255, 0], [0, 255, 85], [0, 255, 170], [0, 255, 255],
-    [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255], [170, 0, 255],
-    [255, 0, 255], [255, 0, 170], [255, 0, 85],
-]
 
 EPS = 1e-6
 
@@ -506,93 +492,3 @@ def _move_extra(flat, w, h, normalized, delta, scale, pivot):
         return flat
     arr[mask, :2] = (arr[mask, :2] - pivot) * scale + pivot + delta
     return _to_flat(arr, w, h, normalized)
-
-
-# ---------------------------------------------------------------- rendering
-
-
-def _ellipse_poly(cx, cy, ax, ay, angle_deg, steps=24):
-    a = math.radians(angle_deg)
-    ca, sa = math.cos(a), math.sin(a)
-    pts = []
-    for i in range(steps):
-        t = 2.0 * math.pi * i / steps
-        x, y = ax * math.cos(t), ay * math.sin(t)
-        pts.append((cx + x * ca - y * sa, cy + x * sa + y * ca))
-    return pts
-
-
-def render_pose(frames, normalized, width=None, height=None, stick_width=4,
-                point_radius=4, draw_face=True, draw_hands=True):
-    from PIL import Image, ImageDraw
-
-    images = []
-    for frame in frames:
-        w, h = _canvas(frame)
-        w = int(width or w)
-        h = int(height or h)
-        canvas = np.zeros((h, w, 3), dtype=np.uint8)
-
-        for person in frame.get("people", []) or []:
-            arr = _to_pixels(person.get("pose_keypoints_2d"), w, h, normalized)
-            if arr is None:
-                continue
-
-            # limbs, blended the way the reference implementation does
-            layer = Image.fromarray(canvas)
-            draw = ImageDraw.Draw(layer)
-            for idx, (a, b) in enumerate(LIMB_SEQ):
-                if not (_valid(arr, a) and _valid(arr, b)):
-                    continue
-                p, q = arr[a, :2], arr[b, :2]
-                mid = (p + q) / 2.0
-                length = float(np.linalg.norm(p - q))
-                angle = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0]))
-                poly = _ellipse_poly(mid[0], mid[1], length / 2.0,
-                                     stick_width, angle)
-                draw.polygon(poly, fill=tuple(COLORS[idx]))
-            blended = (canvas.astype(np.float32) * 0.4
-                       + np.asarray(layer, dtype=np.float32) * 0.6)
-            canvas = np.clip(blended, 0, 255).astype(np.uint8)
-
-            img = Image.fromarray(canvas)
-            draw = ImageDraw.Draw(img)
-            for i in range(min(18, len(arr))):
-                if not _valid(arr, i):
-                    continue
-                x, y = float(arr[i, 0]), float(arr[i, 1])
-                draw.ellipse(
-                    [x - point_radius, y - point_radius,
-                     x + point_radius, y + point_radius],
-                    fill=tuple(COLORS[i]),
-                )
-
-            if draw_face:
-                face = _to_pixels(person.get("face_keypoints_2d"), w, h, normalized)
-                if face is not None:
-                    for i in range(len(face)):
-                        if face[i, 2] <= 0:
-                            continue
-                        x, y = float(face[i, 0]), float(face[i, 1])
-                        draw.ellipse([x - 1.5, y - 1.5, x + 1.5, y + 1.5],
-                                     fill=(255, 255, 255))
-
-            if draw_hands:
-                for key in ("hand_left_keypoints_2d", "hand_right_keypoints_2d"):
-                    hand = _to_pixels(person.get(key), w, h, normalized)
-                    if hand is None:
-                        continue
-                    for i in range(len(hand)):
-                        if hand[i, 2] <= 0:
-                            continue
-                        x, y = float(hand[i, 0]), float(hand[i, 1])
-                        draw.ellipse([x - 2, y - 2, x + 2, y + 2],
-                                     fill=(0, 0, 255))
-
-            canvas = np.asarray(img, dtype=np.uint8)
-
-        images.append(canvas.astype(np.float32) / 255.0)
-
-    if not images:
-        images = [np.zeros((512, 512, 3), dtype=np.float32)]
-    return np.stack(images, axis=0)

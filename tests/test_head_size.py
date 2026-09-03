@@ -1,5 +1,4 @@
 import sys
-import types
 import unittest
 import importlib.util
 from pathlib import Path
@@ -14,8 +13,6 @@ import pose_retarget as pr  # noqa: E402
 def load_node_class():
     root = Path(__file__).resolve().parents[1]
     package_name = "comfyui_pose_retarget_test_package"
-    if "torch" not in sys.modules:
-        sys.modules["torch"] = types.SimpleNamespace(from_numpy=lambda value: value)
     spec = importlib.util.spec_from_file_location(
         package_name, root / "__init__.py",
         submodule_search_locations=[str(root)])
@@ -147,10 +144,10 @@ class HeadSizeTests(unittest.TestCase):
         output, report = node.run(
             frame(reference_body, reference_face),
             frame(driving_body, driving_face),
-            "torso", "off", "reference", "neck",
+            "torso", "off", "neck",
             1.0, 1.0, 1.0, 1.0,
             "off", 0.15, 0.75,
-            "off", 16, 0, -1)
+            "off", 16)
 
         person = output[0]["people"][0]
         output_body = np.asarray(
@@ -169,6 +166,53 @@ class HeadSizeTests(unittest.TestCase):
         self.assertAlmostEqual(output_ratio, reference_ratio, places=5)
         self.assertAlmostEqual(output_neck_to_nose, 40.0, places=5)
         self.assertIn("metric=face_landmarks", report)
+
+    def test_node_schema_has_no_source_or_person_selectors(self):
+        inputs = load_node_class().INPUT_TYPES()["required"]
+
+        self.assertNotIn("head_size_source", inputs)
+        self.assertNotIn("reference_person", inputs)
+        self.assertNotIn("driving_person", inputs)
+
+    def test_render_node_is_not_registered(self):
+        root = Path(__file__).resolve().parents[1]
+        package_name = "comfyui_pose_retarget_mapping_test_package"
+        spec = importlib.util.spec_from_file_location(
+            package_name, root / "__init__.py",
+            submodule_search_locations=[str(root)])
+        package = importlib.util.module_from_spec(spec)
+        sys.modules[package_name] = package
+        spec.loader.exec_module(package)
+
+        self.assertNotIn("RenderPoseKeypoints", package.NODE_CLASS_MAPPINGS)
+
+    def test_node_keeps_only_first_person(self):
+        reference_body = body_with_unit(100.0, face_span=30.0)
+        driving_body = body_with_unit(100.0, face_span=20.0)
+
+        def person(body):
+            return {"pose_keypoints_2d": body.reshape(-1).tolist()}
+
+        reference = [{
+            "canvas_width": 512,
+            "canvas_height": 512,
+            "people": [person(reference_body), person(reference_body)],
+        }]
+        driving = [{
+            "canvas_width": 512,
+            "canvas_height": 512,
+            "people": [person(driving_body), person(driving_body)],
+        }]
+
+        output, report = load_node_class()().run(
+            reference, driving, "torso", "off", "neck",
+            1.0, 1.0, 1.0, 1.0,
+            "off", 0.15, 0.75, "off", 16)
+
+        self.assertEqual(len(output[0]["people"]), 1)
+        self.assertIn("single-person node", report)
+        self.assertIn("1 extra reference person", report)
+        self.assertIn("1 extra driving person", report)
 
 
 if __name__ == "__main__":

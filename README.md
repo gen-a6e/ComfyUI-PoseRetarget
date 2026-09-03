@@ -13,7 +13,7 @@ cd ComfyUI/custom_nodes
 git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
 ```
 
-追加の依存パッケージはありません（numpy と Pillow のみ、どちらも ComfyUI に同梱）。
+追加の依存パッケージはありません（numpy は ComfyUI に同梱）。
 ComfyUI を再起動してください。
 
 フォルダ名は何でも構いません。ブラウザ側の JS を使っていないので、
@@ -31,7 +31,6 @@ Manager がフォルダ名を変えても壊れません。
 | パラメータ | 既定 | 説明 |
 |---|---|---|
 | `reference_symmetry` | longer_side | 参照画像で片側の手足が曲がっていた場合、左右で長いほうの骨の長さを採用する。average は平均、off で無効 |
-| `head_size_source` | reference | reference=顔と身体の比率を参照画像から取る。driving=その比率をポーズ画像から取る |
 | `size_reference` | torso | 画面上のサイズを決める基準。torso が最も安定。肩や脚が隠れる構図なら shoulder_width / head_size |
 | `anchor` | hips | 位置を合わせる基準点。全身なら hips、上半身中心なら neck |
 | `uniform_scale` | 1.0 | 全体の大きさ |
@@ -43,22 +42,16 @@ Manager がフォルダ名を変えても壊れません。
 | `canonical_trigger` | 0.75 | symmetry_and_canonical のときだけ有効。標準比率のこの割合を下回ったら奥行きと判定 |
 | `fit_to_canvas` | shrink_to_fit | shrink_to_fit=はみ出したときだけ縮める（余白は保証されない）。fit_exactly=常に余白の枠に合わせる。off=何もしない |
 | `canvas_margin` | 16 | 余白（px）。fit_exactly のときは必ずこの余白が空く |
-| `reference_person` | 0 | 参照画像に複数人いる場合の番号 |
-| `driving_person` | -1 | -1 で全員に適用。番号指定で1人だけ |
 
 出力は `POSE_KEYPOINT` と、確認用の `report` 文字列です。
-
-### Render Openpose Keypoints
-
-POSE_KEYPOINT を OpenPose 形式の制御画像にします。
-他のレンダーノードを持っていなくても完結するように同梱しています。
-`width` / `height` に 0 を入れると入力のキャンバスサイズをそのまま使います。
+このノードは1人専用です。複数人が入力された場合は先頭の人物だけを使い、
+追加の人物を無視したことを `report` に表示します。
 
 ## つなぎ方
 
 ```
 キャラの全身画像 ─→ DWPose Estimator ─┐
-                                      ├→ Pose Retarget ─→ Render Openpose Keypoints ─→ ControlNet
+                                      ├→ Pose Retarget ─→ SDPose Draw Keypoints ─→ ControlNet
 ポーズ画像       ─→ DWPose Estimator ─┘
 ```
 
@@ -92,12 +85,12 @@ DWPose Estimator は `comfyui_controlnet_aux` のものです。
    各ボーンの**向きはポーズ骨格から**、**長さは参照骨格から**取って座標を積み上げる
 
 顔と手のキーポイントは、鼻・手首の移動量に追従して平行移動し、
-顔は選択した画像の顔と身体の比率、手は肘→手首の長さの変化率でスケールします。
+顔は参照画像の顔と身体の比率、手は肘→手首の長さの変化率でスケールします。
 枠内に収める処理は顔と手の点も含めて判定するので、顔が枠外で切れることはありません。
 
 ### 顔サイズの算出
 
-`head_size_source`で選んだ画像から顔サイズと身体サイズの比率を測り、その比率を
+参照画像から顔サイズと身体サイズの比率を測り、その比率を
 出力骨格へ移植します。画像の解像度や人物の写る大きさが違っても、頭身を維持できます。
 
 顔サイズは、source側と出力側の両方で利用できる最も精密な方法を次の順に選びます。
@@ -137,6 +130,7 @@ DWPose Estimator は `comfyui_controlnet_aux` のものです。
 ## 制限
 
 - COCO-18（DWPose / OpenPose の標準18点）専用です。BODY-25 には未対応
+- 1人専用です。複数人を検出した場合は、参照画像・ポーズ画像とも先頭の人物だけを使います
 - 2D 情報しかないため、奥行きは見かけの長さからの推定です。左右どちらかが正面を向いていれば
   正確ですが、両手足を同時に手前へ突き出したポーズは原理的に曖昧さが残ります
 - 参照画像は全身が写っているものを使ってください。脚が写っていないと脚の長さを測れず、

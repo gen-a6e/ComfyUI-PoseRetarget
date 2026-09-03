@@ -1,14 +1,13 @@
 import copy
 
 import numpy as np
-import torch
 
 from .pose_retarget import (
     ROOT as ROOT_JOINT,
     EPS, L_WRIST, NOSE, R_WRIST, L_ELBOW, R_ELBOW,
     _anchor_shift, _apply_affine, _bone_lengths,
     _body_unit, _canvas, _as_frame_list, _is_normalized,
-    _to_flat, _to_pixels, _valid, render_pose, retarget_body, _fit_points,
+    _to_flat, _to_pixels, _valid, retarget_body, _fit_points,
     head_correction_factor, scale_head_keypoints, symmetrize_lengths,
 )
 
@@ -24,7 +23,6 @@ class PoseRetargetProportions:
                 "driving_pose": ("POSE_KEYPOINT",),
                 "size_reference": (["torso", "shoulder_width", "head_size"],),
                 "reference_symmetry": (["longer_side", "average", "off"],),
-                "head_size_source": (["reference", "driving"],),
                 "anchor": (["hips", "neck", "feet", "bbox_center"],),
                 "uniform_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
                                             "max": 3.0, "step": 0.01}),
@@ -42,8 +40,6 @@ class PoseRetargetProportions:
                 "fit_to_canvas": (["shrink_to_fit", "fit_exactly", "off"],),
                 "canvas_margin": ("INT", {"default": 16, "min": 0,
                                           "max": 512, "step": 1}),
-                "reference_person": ("INT", {"default": 0, "min": 0, "max": 32}),
-                "driving_person": ("INT", {"default": -1, "min": -1, "max": 32}),
             }
         }
 
@@ -53,10 +49,10 @@ class PoseRetargetProportions:
     CATEGORY = "pose-retarget"
 
     def run(self, reference_pose, driving_pose, size_reference,
-            reference_symmetry, head_size_source, anchor,
+            reference_symmetry, anchor,
             uniform_scale, leg_scale, arm_scale, head_scale,
             foreshorten_mode, foreshorten_floor, canonical_trigger,
-            fit_to_canvas, canvas_margin, reference_person, driving_person):
+            fit_to_canvas, canvas_margin):
 
         ref_frames = _as_frame_list(reference_pose)
         drv_frames = _as_frame_list(driving_pose)
@@ -71,13 +67,13 @@ class PoseRetargetProportions:
         if not ref_people:
             return (copy.deepcopy(driving_pose),
                     "no person in reference pose; passed through")
-        idx = min(reference_person, len(ref_people) - 1)
-        ref = _to_pixels(ref_people[idx].get("pose_keypoints_2d"),
+        ref_person = ref_people[0]
+        ref = _to_pixels(ref_person.get("pose_keypoints_2d"),
                          rw, rh, ref_norm)
         if ref is None:
             return (copy.deepcopy(driving_pose),
                     "reference has no body keypoints; passed through")
-        ref_face = _to_pixels(ref_people[idx].get("face_keypoints_2d"),
+        ref_face = _to_pixels(ref_person.get("face_keypoints_2d"),
                               rw, rh, ref_norm)
 
         ref_len = _bone_lengths(ref)
@@ -87,18 +83,20 @@ class PoseRetargetProportions:
         out_frames = []
         touched = 0
         head_notes = []
+        ignored_driving_people = 0
         for frame in drv_frames:
             w, h = _canvas(frame)
             new_frame = copy.deepcopy(frame)
             people = new_frame.get("people", []) or []
+            if not people:
+                out_frames.append(new_frame)
+                continue
 
-            for pi, person in enumerate(people):
-                if driving_person >= 0 and pi != driving_person:
-                    continue
-                drv = _to_pixels(person.get("pose_keypoints_2d"), w, h, drv_norm)
-                if drv is None:
-                    continue
-
+            ignored_driving_people += max(0, len(people) - 1)
+            person = people[0]
+            new_frame["people"] = [person]
+            drv = _to_pixels(person.get("pose_keypoints_2d"), w, h, drv_norm)
+            if drv is not None:
                 out = retarget_body(ref, drv, ref_len, ref_unit, size_reference,
                                     uniform_scale, leg_scale, arm_scale,
                                     1.0, foreshorten_mode,
@@ -130,18 +128,12 @@ class PoseRetargetProportions:
                     ex[m, :2] = (ex[m, :2] - pivot) * ratio + pivot + delta
                     extras[key] = ex
 
-                # Transfer the selected source's actual face-to-body ratio.
+                # Transfer the reference's actual face-to-body ratio.
                 # Keep the driving landmark layout (pose/expression), but
-                # scale its footprint to the reference or driving proportion.
-                drv_face = _to_pixels(person.get("face_keypoints_2d"),
-                                      w, h, drv_norm)
-                if head_size_source == "driving":
-                    source_body, source_face = drv, drv_face
-                else:
-                    source_body, source_face = ref, ref_face
+                # scale its footprint to the reference proportion.
                 face = extras.get("face_keypoints_2d")
                 correction, method, details = head_correction_factor(
-                    source_body, source_face, out, face,
+                    ref, ref_face, out, face,
                     size_reference, head_scale)
                 use_neck_pivot = method == "neck_to_nose"
                 out = scale_head_keypoints(
@@ -154,12 +146,12 @@ class PoseRetargetProportions:
                         out[pivot_joint, :2])
                 if details:
                     head_notes.append(
-                        f"person {pi}: head_source={head_size_source}, "
-                        f"metric={method}, correction={correction:.3f}, "
+                        f"head_source=reference, metric={method}, "
+                        f"correction={correction:.3f}, "
                         f"source_ratio={details['source_ratio']:.3f}")
                 else:
                     head_notes.append(
-                        f"person {pi}: head metric {method}; "
+                        f"head metric {method}; "
                         f"manual head_scale={correction:.3f} only")
 
                 # fit the WHOLE figure, face and hands included, so they
@@ -199,46 +191,18 @@ class PoseRetargetProportions:
                          "measurements.")
         if head_notes:
             report += "\n" + "\n".join(head_notes)
+        ignored_reference_people = max(0, len(ref_people) - 1)
+        if ignored_reference_people or ignored_driving_people:
+            report += ("\nWARNING: single-person node; ignored "
+                       f"{ignored_reference_people} extra reference person(s) "
+                       f"and {ignored_driving_people} extra driving person(s).")
         return (out_frames, report)
-
-
-class RenderPoseKeypoints:
-    """POSE_KEYPOINT -> OpenPose control image, so no extra pack is needed."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "pose_keypoint": ("POSE_KEYPOINT",),
-                "width": ("INT", {"default": 0, "min": 0, "max": 8192}),
-                "height": ("INT", {"default": 0, "min": 0, "max": 8192}),
-                "stick_width": ("INT", {"default": 4, "min": 1, "max": 32}),
-                "point_radius": ("INT", {"default": 4, "min": 1, "max": 32}),
-                "draw_face": ("BOOLEAN", {"default": True}),
-                "draw_hands": ("BOOLEAN", {"default": True}),
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "run"
-    CATEGORY = "pose-retarget"
-
-    def run(self, pose_keypoint, width, height, stick_width, point_radius,
-            draw_face, draw_hands):
-        frames = _as_frame_list(pose_keypoint)
-        normalized = _is_normalized(frames)
-        arr = render_pose(frames, normalized,
-                          width or None, height or None,
-                          stick_width, point_radius, draw_face, draw_hands)
-        return (torch.from_numpy(arr),)
 
 
 NODE_CLASS_MAPPINGS = {
     "PoseRetargetProportions": PoseRetargetProportions,
-    "RenderPoseKeypoints": RenderPoseKeypoints,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PoseRetargetProportions": "Pose Retarget (keep body proportions)",
-    "RenderPoseKeypoints": "Render Openpose Keypoints",
 }
