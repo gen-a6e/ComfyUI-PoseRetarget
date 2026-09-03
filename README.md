@@ -30,15 +30,15 @@ Manager がフォルダ名を変えても壊れません。
 
 | パラメータ | 既定 | 説明 |
 |---|---|---|
-| `reference_symmetry` | longer_side | 参照画像で片側の手足が曲がっていた場合、左右で長いほうの骨の長さを採用する。average は平均、off で無効 |
 | `size_reference` | torso | 画面上のサイズを決める基準。torso が最も安定。肩や脚が隠れる構図なら shoulder_width / head_size |
+| `reference_symmetry` | longer_side | reference側の測定誤差を補正する。曲がりや奥行きで片側だけ短く測られた場合、左右の骨を同じ長さにする |
 | `anchor` | hips | 位置を合わせる基準点。全身なら hips、上半身中心なら neck |
 | `uniform_scale` | 1.0 | 全体の大きさ |
 | `leg_scale` | 1.0 | 脚だけ追加で伸縮。頭身の微調整用 |
 | `arm_scale` | 1.0 | 腕だけ追加で伸縮 |
 | `head_scale` | 1.0 | 頭部だけ追加で伸縮 |
-| `foreshorten_mode` | symmetry | 奥行き方向の処理。下記参照 |
-| `foreshorten_floor` | 0.15 | ボーンが潰れすぎないための下限 |
+| `foreshorten_mode` | symmetry | driving側の奥行き表現を保持する。カメラ方向を向いて短く見える手足を、出力でも同じ比率だけ短くする |
+| `foreshorten_floor` | 0.15 | 奥行き補正でボーンを短くする場合の下限倍率 |
 | `canonical_trigger` | 0.75 | symmetry_and_canonical のときだけ有効。標準比率のこの割合を下回ったら奥行きと判定 |
 | `fit_to_canvas` | shrink_to_fit | shrink_to_fit=はみ出したときだけ縮める（余白は保証されない）。fit_exactly=常に余白の枠に合わせる。off=何もしない |
 | `canvas_margin` | 16 | 余白（px）。fit_exactly のときは必ずこの余白が空く |
@@ -57,6 +57,40 @@ Manager がフォルダ名を変えても壊れません。
 
 DWPose Estimator は `comfyui_controlnet_aux` のものです。
 `POSE_KEYPOINT` 出力のほうを繋いでください（画像出力ではありません）。
+
+## reference_symmetry と foreshorten_mode の違い
+
+どちらも左右の骨の長さを比較しますが、**処理する入力と目的が逆**です。
+
+- `reference_symmetry`はreference側に使います。参照画像で片腕だけ曲がっていたり、
+  奥行き方向を向いて短く検出されたりした場合、その短さを体型として記憶しないための補正です。
+  - `longer_side`（既定）: 左右とも長い側の長さに揃える
+  - `average`: 左右の平均値に揃える
+  - `off`: 左右を揃えず、検出された長さをそのまま使う
+- `foreshorten_mode`はdriving側に使います。手足がカメラ方向を向いて短く見える場合、
+  その見かけの短さをポーズの一部として出力へ残す処理です。
+
+処理順は次のようになります。
+
+```text
+出力の骨の長さ
+  = 左右補正済みのreference骨長
+  × referenceとdrivingの全体サイズ比
+  × drivingの奥行き短縮率
+```
+
+例えば、全体サイズ比を `1.0` とし、referenceの左右の腕が `80 / 60` と検出されたとします。
+`reference_symmetry=longer_side`なら、まず本来の骨長を `80 / 80` に補正します。
+次に、drivingで片腕だけカメラ方向を向き `80 / 40` に見えている場合、
+`foreshorten_mode=symmetry`が短い側へ `0.5` を掛けます。最終的な出力は `80 / 40` となり、
+referenceの体型を使いながらdrivingの奥行き感も維持できます。
+
+通常の推奨設定は `reference_symmetry=longer_side` と
+`foreshorten_mode=symmetry` の組み合わせです。
+正面かつ左右対称で正確に検出されたreferenceを使う場合や、意図的に左右の骨長が異なる
+キャラクターの場合だけ `reference_symmetry=off` を検討してください。
+drivingの奥行きによる短縮を無視して、常にreferenceの骨長をそのまま使いたい場合は
+`foreshorten_mode=off` にします。
 
 ## 奥行き方向（foreshorten_mode）
 
@@ -93,7 +127,7 @@ DWPose Estimator は `comfyui_controlnet_aux` のものです。
 参照画像から顔サイズと身体サイズの比率を測り、その比率を
 出力骨格へ移植します。画像の解像度や人物の写る大きさが違っても、頭身を維持できます。
 
-顔サイズは、source側と出力側の両方で利用できる最も精密な方法を次の順に選びます。
+顔サイズは、reference側と出力側の両方で利用できる最も精密な方法を次の順に選びます。
 
 1. DWPoseの詳細な顔ランドマーク領域
 2. 左右の耳の間隔
@@ -102,7 +136,7 @@ DWPose Estimator は `comfyui_controlnet_aux` のものです。
 
 異なる種類の測定値を直接比較すると倍率が狂うため、必ず両側で同じ方法を使います。
 詳細な顔ランドマークがある場合は外れ値の影響を減らした顔領域の対角線を使います。
-顔の向きと表情はdriving側のランドマークを維持し、大きさだけをsource側の比率へ合わせます。
+顔の向きと表情はdriving側のランドマークを維持し、大きさだけをreference側の比率へ合わせます。
 通常は鼻の位置を固定して、その周囲の顔ランドマークと目・耳だけを拡大縮小するため、
 顔サイズの補正によって首から鼻までの距離が伸びることはありません。
 詳細顔点・耳・目がすべて取得できず、首→鼻へフォールバックした場合だけは、
