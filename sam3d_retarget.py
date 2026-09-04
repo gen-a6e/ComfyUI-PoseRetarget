@@ -186,6 +186,10 @@ def hip_center(points):
     return (points[LEFT_HIP] + points[RIGHT_HIP]) * 0.5
 
 
+def shoulder_center(points):
+    return (points[LEFT_SHOULDER] + points[RIGHT_SHOULDER]) * 0.5
+
+
 def _edge_delta(points, child, parent):
     origin = hip_center(points) if parent is None else points[parent]
     return points[child] - origin
@@ -197,7 +201,7 @@ def body_unit(points, mode="torso"):
     shoulder = np.linalg.norm(points[LEFT_SHOULDER] - points[RIGHT_SHOULDER])
     body_height = (
         torso
-        + np.linalg.norm(points[NOSE] - points[NECK])
+        + np.linalg.norm(points[NOSE] - shoulder_center(points))
         + 0.5 * (
             np.linalg.norm(points[LEFT_KNEE] - points[LEFT_HIP])
             + np.linalg.norm(points[RIGHT_KNEE] - points[RIGHT_HIP]))
@@ -239,10 +243,69 @@ def reference_lengths(points, symmetry="average"):
     return lengths
 
 
+def body_measurements(points):
+    """Return the principal 3D lengths shown in the retarget report."""
+    return {
+        "torso": float(np.linalg.norm(points[NECK] - hip_center(points))),
+        "shoulder_width": float(np.linalg.norm(
+            points[LEFT_SHOULDER] - points[RIGHT_SHOULDER])),
+        "hip_width": float(np.linalg.norm(
+            points[LEFT_HIP] - points[RIGHT_HIP])),
+        "shoulder_to_nose": float(np.linalg.norm(
+            points[NOSE] - shoulder_center(points))),
+        "upper_arm": 0.5 * (
+            float(np.linalg.norm(points[LEFT_ELBOW] - points[LEFT_SHOULDER]))
+            + float(np.linalg.norm(
+                points[RIGHT_ELBOW] - points[RIGHT_SHOULDER]))),
+        "forearm": 0.5 * (
+            float(np.linalg.norm(points[LEFT_WRIST] - points[LEFT_ELBOW]))
+            + float(np.linalg.norm(
+                points[RIGHT_WRIST] - points[RIGHT_ELBOW]))),
+        "thigh": 0.5 * (
+            float(np.linalg.norm(points[LEFT_KNEE] - points[LEFT_HIP]))
+            + float(np.linalg.norm(points[RIGHT_KNEE] - points[RIGHT_HIP]))),
+        "shin": 0.5 * (
+            float(np.linalg.norm(points[LEFT_ANKLE] - points[LEFT_KNEE]))
+            + float(np.linalg.norm(
+                points[RIGHT_ANKLE] - points[RIGHT_KNEE]))),
+    }
+
+
+def normalized_body_proportions(points, unit):
+    """Normalize report measurements by one explicit body-size unit."""
+    if not np.isfinite(unit) or unit <= EPS:
+        raise ValueError("body-size unit must be positive")
+    return {
+        name: value / float(unit)
+        for name, value in body_measurements(points).items()
+    }
+
+
+def _unit_direction(primary, fallback):
+    """Return a stable unit vector, preferring the driving-pose direction."""
+    for value in (primary, fallback):
+        norm = float(np.linalg.norm(value))
+        if np.isfinite(norm) and norm > EPS:
+            return value / norm
+    return np.zeros(3, dtype=np.float64)
+
+
+def _place_edge(output, driving, reference, child, parent, target_length):
+    direction = _unit_direction(
+        driving[child] - driving[parent],
+        reference[child] - reference[parent],
+    )
+    output[child] = output[parent] + direction * target_length
+
+
 def retarget_mhr70(reference, driving, size_reference="torso",
                    reference_symmetry="average", uniform_scale=1.0,
                    leg_scale=1.0, arm_scale=1.0, head_scale=1.0,
-                   hand_scale=1.0):
+                   hand_scale=1.0, torso_scale=1.0,
+                   shoulder_width_scale=1.0, hip_width_scale=1.0,
+                   neck_scale=1.0, upper_arm_scale=1.0,
+                   forearm_scale=1.0, thigh_scale=1.0,
+                   shin_scale=1.0):
     """Combine reference 3D bone lengths with driving 3D directions."""
     reference = np.asarray(reference, dtype=np.float64)
     driving = np.asarray(driving, dtype=np.float64)
@@ -252,37 +315,122 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     ref_unit = body_unit(reference, size_reference)
     drv_unit = body_unit(driving, size_reference)
     base_scale = drv_unit / ref_unit * float(uniform_scale)
-    lengths = reference_lengths(reference, reference_symmetry)
-    part_scales = {
-        "torso": 1.0,
-        "body": 1.0,
-        "arm": float(arm_scale),
-        "leg": float(leg_scale),
-        "foot": float(leg_scale),
-        "head": float(head_scale),
-        "hand": float(hand_scale) * float(arm_scale),
+    target_unit = drv_unit * float(uniform_scale)
+    length_ratios = {
+        child: length / ref_unit
+        for child, length in reference_lengths(
+            reference, reference_symmetry).items()
     }
+    reference_proportions = normalized_body_proportions(reference, ref_unit)
 
     output = driving.copy()
     root = hip_center(driving)
-    for child, parent, group in RETARGET_EDGES:
-        source_parent = hip_center(driving) if parent is None else driving[parent]
-        target_parent = root if parent is None else output[parent]
-        delta = driving[child] - source_parent
-        norm = float(np.linalg.norm(delta))
-        if norm <= EPS:
-            delta = _edge_delta(reference, child, parent)
-            norm = float(np.linalg.norm(delta))
-        if norm <= EPS:
-            output[child] = target_parent
+
+    # Build the central body explicitly. This makes widths exact instead of
+    # treating the left and right halves as unrelated bones.
+    hip_axis = _unit_direction(
+        driving[LEFT_HIP] - driving[RIGHT_HIP],
+        reference[LEFT_HIP] - reference[RIGHT_HIP],
+    )
+    hip_width = (
+        reference_proportions["hip_width"] * target_unit
+        * float(hip_width_scale)
+    )
+    output[LEFT_HIP] = root + hip_axis * hip_width * 0.5
+    output[RIGHT_HIP] = root - hip_axis * hip_width * 0.5
+
+    torso_direction = _unit_direction(
+        driving[NECK] - hip_center(driving),
+        reference[NECK] - hip_center(reference),
+    )
+    torso_length = (
+        reference_proportions["torso"] * target_unit
+        * float(torso_scale)
+    )
+    output[NECK] = root + torso_direction * torso_length
+
+    shoulder_axis = _unit_direction(
+        driving[LEFT_SHOULDER] - driving[RIGHT_SHOULDER],
+        reference[LEFT_SHOULDER] - reference[RIGHT_SHOULDER],
+    )
+    shoulder_width = (
+        reference_proportions["shoulder_width"] * target_unit
+        * float(shoulder_width_scale)
+    )
+    output[LEFT_SHOULDER] = (
+        output[NECK] + shoulder_axis * shoulder_width * 0.5)
+    output[RIGHT_SHOULDER] = (
+        output[NECK] - shoulder_axis * shoulder_width * 0.5)
+
+    edge_scales = (
+        (LEFT_ELBOW, LEFT_SHOULDER,
+         float(arm_scale) * float(upper_arm_scale)),
+        (RIGHT_ELBOW, RIGHT_SHOULDER,
+         float(arm_scale) * float(upper_arm_scale)),
+        (LEFT_WRIST, LEFT_ELBOW,
+         float(arm_scale) * float(forearm_scale)),
+        (RIGHT_WRIST, RIGHT_ELBOW,
+         float(arm_scale) * float(forearm_scale)),
+        (LEFT_KNEE, LEFT_HIP,
+         float(leg_scale) * float(thigh_scale)),
+        (RIGHT_KNEE, RIGHT_HIP,
+         float(leg_scale) * float(thigh_scale)),
+        (LEFT_ANKLE, LEFT_KNEE,
+         float(leg_scale) * float(shin_scale)),
+        (RIGHT_ANKLE, RIGHT_KNEE,
+         float(leg_scale) * float(shin_scale)),
+    )
+    for child, parent, part_scale in edge_scales:
+        _place_edge(
+            output, driving, reference, child, parent,
+            length_ratios[child] * target_unit * part_scale,
+        )
+
+    for child, parent, _ in BODY_EDGES:
+        if parent not in (LEFT_ANKLE, RIGHT_ANKLE):
             continue
-        target_length = lengths[child] * base_scale * part_scales[group]
-        output[child] = target_parent + delta / norm * target_length
+        _place_edge(
+            output, driving, reference, child, parent,
+            length_ratios[child] * target_unit * float(leg_scale),
+        )
+
+    # Shoulder center -> nose is a direct reference proportion. Anchoring it
+    # explicitly avoids accumulating shoulder/neck estimation offsets.
+    driving_shoulders = shoulder_center(driving)
+    reference_shoulders = shoulder_center(reference)
+    nose_direction = _unit_direction(
+        driving[NOSE] - driving_shoulders,
+        reference[NOSE] - reference_shoulders,
+    )
+    neck_length = (
+        reference_proportions["shoulder_to_nose"] * target_unit
+        * float(head_scale) * float(neck_scale)
+    )
+    output[NOSE] = shoulder_center(output) + nose_direction * neck_length
+
+    for child, parent in (
+            (LEFT_EYE, NOSE), (RIGHT_EYE, NOSE),
+            (LEFT_EAR, LEFT_EYE), (RIGHT_EAR, RIGHT_EYE)):
+        _place_edge(
+            output, driving, reference, child, parent,
+            length_ratios[child] * target_unit * float(head_scale),
+        )
+
+    for child, parent, _ in HAND_EDGES:
+        _place_edge(
+            output, driving, reference, child, parent,
+            length_ratios[child] * target_unit
+            * float(arm_scale) * float(hand_scale),
+        )
 
     details = {
         "reference_unit": ref_unit,
         "driving_unit": drv_unit,
         "base_scale": base_scale,
+        "size_reference": size_reference,
+        "reference_proportions": reference_proportions,
+        "generated_proportions": normalized_body_proportions(
+            output, target_unit),
     }
     return output, details
 

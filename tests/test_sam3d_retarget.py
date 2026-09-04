@@ -87,6 +87,115 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(actual), expected_length, places=7)
         np.testing.assert_allclose(actual / np.linalg.norm(actual), (0.0, 0.0, -1.0))
 
+    def test_reference_proportions_survive_large_scale_and_side_rotation(self):
+        reference = skeleton()
+        reference[sr.LEFT_SHOULDER] = (0.34, -0.58, 0.0)
+        reference[sr.RIGHT_SHOULDER] = (-0.34, -0.58, 0.0)
+        reference[sr.LEFT_HIP] = (0.11, 0.0, 0.0)
+        reference[sr.RIGHT_HIP] = (-0.11, 0.0, 0.0)
+
+        # A much larger driving person viewed from the side. The rotation
+        # puts lateral and forward-reaching bones primarily on the Z axis.
+        angle = np.deg2rad(88.0)
+        rotation = np.array([
+            [np.cos(angle), 0.0, np.sin(angle)],
+            [0.0, 1.0, 0.0],
+            [-np.sin(angle), 0.0, np.cos(angle)],
+        ])
+        driving = (skeleton() * 2.75) @ rotation.T
+
+        output, details = sr.retarget_mhr70(
+            reference, driving, reference_symmetry="off")
+
+        for name, expected in details["reference_proportions"].items():
+            self.assertAlmostEqual(
+                details["generated_proportions"][name], expected,
+                places=7, msg=name)
+
+        driving_direction = (
+            driving[sr.LEFT_ELBOW] - driving[sr.LEFT_SHOULDER])
+        output_direction = (
+            output[sr.LEFT_ELBOW] - output[sr.LEFT_SHOULDER])
+        np.testing.assert_allclose(
+            output_direction / np.linalg.norm(output_direction),
+            driving_direction / np.linalg.norm(driving_direction),
+        )
+
+    def test_each_size_reference_matches_driving_unit_by_default(self):
+        reference = skeleton()
+        driving = skeleton() * 1.85
+
+        for mode in ("torso", "shoulder_width", "body_height"):
+            with self.subTest(mode=mode):
+                output, details = sr.retarget_mhr70(
+                    reference, driving, size_reference=mode,
+                    reference_symmetry="off")
+
+                self.assertAlmostEqual(
+                    sr.body_unit(output, mode),
+                    details["driving_unit"],
+                    places=7,
+                )
+
+    def test_detailed_scales_control_each_reported_proportion(self):
+        reference = skeleton()
+        driving = skeleton()
+
+        _, details = sr.retarget_mhr70(
+            reference,
+            driving,
+            reference_symmetry="off",
+            arm_scale=1.10,
+            leg_scale=0.90,
+            head_scale=1.20,
+            torso_scale=1.30,
+            shoulder_width_scale=0.80,
+            hip_width_scale=1.15,
+            neck_scale=0.75,
+            upper_arm_scale=1.40,
+            forearm_scale=0.60,
+            thigh_scale=1.25,
+            shin_scale=0.70,
+        )
+
+        reference_ratios = details["reference_proportions"]
+        generated_ratios = details["generated_proportions"]
+        expected_scales = {
+            "torso": 1.30,
+            "shoulder_width": 0.80,
+            "hip_width": 1.15,
+            "shoulder_to_nose": 1.20 * 0.75,
+            "upper_arm": 1.10 * 1.40,
+            "forearm": 1.10 * 0.60,
+            "thigh": 0.90 * 1.25,
+            "shin": 0.90 * 0.70,
+        }
+        for name, multiplier in expected_scales.items():
+            self.assertAlmostEqual(
+                generated_ratios[name],
+                reference_ratios[name] * multiplier,
+                places=7,
+                msg=name,
+            )
+
+    def test_shoulder_center_to_nose_length_is_exact_for_tilted_head(self):
+        reference = skeleton()
+        driving = skeleton()
+        driving[sr.NOSE] = (
+            sr.shoulder_center(driving) + np.array([0.16, -0.08, -0.25]))
+
+        output, details = sr.retarget_mhr70(
+            reference, driving, reference_symmetry="off",
+            head_scale=1.25, neck_scale=0.80)
+
+        actual = np.linalg.norm(
+            output[sr.NOSE] - sr.shoulder_center(output))
+        expected = (
+            details["reference_proportions"]["shoulder_to_nose"]
+            * details["driving_unit"] * 1.25 * 0.80
+        )
+        self.assertAlmostEqual(actual, expected, places=7)
+
     def test_average_symmetry_equalizes_mirrored_bones(self):
         reference = skeleton()
         reference[sr.LEFT_ELBOW] = reference[sr.LEFT_SHOULDER] + (0.50, 0.0, 0.0)
@@ -153,6 +262,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(len(person["pose_keypoints_2d"]), 18 * 3)
         self.assertEqual(len(person["hand_left_keypoints_2d"]), 21 * 3)
         self.assertIn("SAM 3D Body retargeted", report)
+        self.assertIn("Ratios reference->generated", report)
+        self.assertIn("shoulder_to_nose:", report)
 
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
         package = load_package()
@@ -164,6 +275,11 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(inputs["reference_sam3d"], ("SAM3D_OUTPUT",))
         self.assertEqual(inputs["driving_sam3d"], ("SAM3D_OUTPUT",))
         self.assertEqual(inputs["driving_image"], ("IMAGE",))
+        for name in (
+                "torso_scale", "shoulder_width_scale", "hip_width_scale",
+                "neck_scale", "upper_arm_scale", "forearm_scale",
+                "thigh_scale", "shin_scale"):
+            self.assertEqual(inputs[name][1]["default"], 1.0)
 
     def test_invalid_joint_shape_has_actionable_error(self):
         with self.assertRaisesRegex(ValueError, r"shape \(70, 3\)"):

@@ -34,6 +34,26 @@ class SAM3DBodyPoseRetarget:
                 "fit_to_canvas": (["shrink_to_fit", "fit_exactly", "off"],),
                 "canvas_margin": ("INT", {"default": 16, "min": 0,
                                           "max": 512, "step": 1}),
+                "torso_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
+                                            "max": 3.0, "step": 0.01}),
+                "shoulder_width_scale": (
+                    "FLOAT", {"default": 1.0, "min": 0.1,
+                              "max": 3.0, "step": 0.01}),
+                "hip_width_scale": (
+                    "FLOAT", {"default": 1.0, "min": 0.1,
+                              "max": 3.0, "step": 0.01}),
+                "neck_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
+                                           "max": 3.0, "step": 0.01}),
+                "upper_arm_scale": (
+                    "FLOAT", {"default": 1.0, "min": 0.1,
+                              "max": 3.0, "step": 0.01}),
+                "forearm_scale": (
+                    "FLOAT", {"default": 1.0, "min": 0.1,
+                              "max": 3.0, "step": 0.01}),
+                "thigh_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
+                                            "max": 3.0, "step": 0.01}),
+                "shin_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
+                                           "max": 3.0, "step": 0.01}),
             }
         }
 
@@ -45,7 +65,10 @@ class SAM3DBodyPoseRetarget:
     def run(self, reference_sam3d, driving_sam3d, driving_image,
             size_reference, reference_symmetry,
             uniform_scale, leg_scale, arm_scale, head_scale, hand_scale,
-            fit_to_canvas, canvas_margin):
+            fit_to_canvas, canvas_margin, torso_scale=1.0,
+            shoulder_width_scale=1.0, hip_width_scale=1.0,
+            neck_scale=1.0, upper_arm_scale=1.0, forearm_scale=1.0,
+            thigh_scale=1.0, shin_scale=1.0):
         reference = extract_mhr70(reference_sam3d)
         driving = extract_mhr70(driving_sam3d)
         retargeted, details = retarget_mhr70(
@@ -58,6 +81,14 @@ class SAM3DBodyPoseRetarget:
             arm_scale=arm_scale,
             head_scale=head_scale,
             hand_scale=hand_scale,
+            torso_scale=torso_scale,
+            shoulder_width_scale=shoulder_width_scale,
+            hip_width_scale=hip_width_scale,
+            neck_scale=neck_scale,
+            upper_arm_scale=upper_arm_scale,
+            forearm_scale=forearm_scale,
+            thigh_scale=thigh_scale,
+            shin_scale=shin_scale,
         )
 
         width, height = image_size(driving_image)
@@ -73,6 +104,11 @@ class SAM3DBodyPoseRetarget:
         depth_note = "unavailable"
         if valid_depth.size:
             depth_note = f"{valid_depth.min():.3f}..{valid_depth.max():.3f} m"
+        ratio_note = ", ".join(
+            f"{name}:{details['reference_proportions'][name]:.3f}"
+            f"->{details['generated_proportions'][name]:.3f}"
+            for name in details["reference_proportions"]
+        )
         report = (
             "SAM 3D Body retargeted one MHR70 skeleton; "
             f"reference_unit={details['reference_unit']:.3f} m; "
@@ -80,6 +116,8 @@ class SAM3DBodyPoseRetarget:
             f"scale={details['base_scale']:.3f}; "
             f"fit_scale={fit_scale:.3f}; "
             f"camera_depth={depth_note}."
+            f" Ratios reference->generated "
+            f"(normalized by {details['size_reference']}): {ratio_note}."
         )
         invalid_count = int((~valid).sum())
         if invalid_count:

@@ -50,6 +50,14 @@ git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
 | `hand_scale` | 1.0 | 手指の追加倍率 |
 | `fit_to_canvas` | shrink_to_fit | はみ出した場合のキャンバス調整 |
 | `canvas_margin` | 16 | fit_exactly、または縮小が必要な場合の余白 |
+| `torso_scale` | 1.0 | 腰中央から首までの胴長の追加倍率 |
+| `shoulder_width_scale` | 1.0 | 肩幅の追加倍率 |
+| `hip_width_scale` | 1.0 | 腰幅の追加倍率 |
+| `neck_scale` | 1.0 | 肩中央から鼻までの長さの追加倍率 |
+| `upper_arm_scale` | 1.0 | 上腕の追加倍率（`arm_scale`との積） |
+| `forearm_scale` | 1.0 | 前腕の追加倍率（`arm_scale`との積） |
+| `thigh_scale` | 1.0 | 太腿の追加倍率（`leg_scale`との積） |
+| `shin_scale` | 1.0 | 脛の追加倍率（`leg_scale`との積） |
 
 ```text
 (Down)Load SAM 3D Body Model ─┬→ Process Image ← reference画像 ─┐
@@ -63,6 +71,10 @@ driving画像 ──────────────────────
 
 出力する`POSE_KEYPOINT`は、ComfyUI標準の`SDPose Draw Keypoints`に合わせた
 絶対ピクセル座標です。
+
+referenceの各骨長は`size_reference`で正規化した比率としてdrivingへ転送します。
+肩幅、腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。
+`report`にはreferenceと生成後の主要な正規化比率を`reference->generated`形式で表示します。
 
 MHR70には鼻・目・耳はありますが、輪郭や口を含む密な顔ランドマークはありません。
 そのためBODY18の顔点は出力し、`face_keypoints_2d`の70点はゼロconfidenceにします。
