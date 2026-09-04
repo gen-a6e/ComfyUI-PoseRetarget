@@ -33,7 +33,7 @@
     .layout { display: grid; grid-template-columns: minmax(460px, 1.3fr) minmax(360px, 1fr); gap: 14px; }
     .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: 0 12px 36px #0005; }
     .viewer-panel { min-height: 650px; display: flex; flex-direction: column; }
-    #viewer { width: 100%; flex: 1; min-height: 500px; border-radius: 10px; background: #080d18; cursor: grab; touch-action: none; }
+    #viewer { display: block; width: 100%; height: 500px; flex: 1 1 500px; min-height: 500px; border-radius: 10px; background: #080d18; cursor: grab; touch-action: none; }
     #viewer:active { cursor: grabbing; }
     .controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
     button, input[type="search"] { border: 1px solid var(--line); background: #19243a; color: var(--text); border-radius: 8px; padding: 7px 10px; }
@@ -154,6 +154,7 @@
     const enabledGroups = new Set(['body', 'face', 'left_hand', 'right_hand']);
     const groupColors = {body:'#a7f3d0', face:'#d7deea', left_hand:'#fde68a', right_hand:'#c4b5fd'};
     let yaw = 0, pitch = 0, zoom = 1, dragging = false, lastX = 0;
+    let activePointerId = null;
     let selectedIndex = null;
 
     threshold.value = data.confidence_threshold;
@@ -229,8 +230,11 @@
     function resizeCanvas() {
       const ratio = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
-      canvas.width = Math.max(1, Math.round(rect.width * ratio));
-      canvas.height = Math.max(1, Math.round(rect.height * ratio));
+      const width = Math.max(1, Math.round(rect.width * ratio));
+      const height = Math.max(1, Math.round(rect.height * ratio));
+      if (canvas.width === width && canvas.height === height) return;
+      canvas.width = width;
+      canvas.height = height;
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       draw();
     }
@@ -282,7 +286,9 @@
         ctx.strokeStyle = groupColors[edge.group] + 'aa';
         ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
       }
-      visible.sort((a,b) => b.r.z - a.r.z);
+      // This is an original-camera depth inspector.  Keep painter order tied
+      // to the reported Z even when the skeleton is rotated for inspection.
+      visible.sort((a,b) => b.point.z_relative_m - a.point.z_relative_m);
       for (const item of visible) {
         const screen = project(item.r);
         const selected = item.index === selectedIndex;
@@ -329,14 +335,28 @@
       pitch = view === 'top' ? Math.PI/2 : 0;
       draw();
     }));
-    canvas.addEventListener('pointerdown', event => { dragging=true; lastX=event.clientX; canvas.setPointerCapture(event.pointerId); });
-    canvas.addEventListener('pointermove', event => { if (!dragging) return; yaw += (event.clientX-lastX)*.01; lastX=event.clientX; draw(); });
-    canvas.addEventListener('pointerup', () => { dragging=false; });
+    function stopDragging() { dragging=false; activePointerId=null; }
+    canvas.addEventListener('pointerdown', event => {
+      if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+      dragging=true; activePointerId=event.pointerId; lastX=event.clientX;
+      canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener('pointermove', event => {
+      if (!dragging || event.pointerId !== activePointerId) return;
+      if (event.pointerType === 'mouse' && !(event.buttons & 1)) { stopDragging(); return; }
+      yaw += (event.clientX-lastX)*.01; lastX=event.clientX; draw();
+    });
+    canvas.addEventListener('pointerup', stopDragging);
+    canvas.addEventListener('pointercancel', stopDragging);
+    canvas.addEventListener('lostpointercapture', stopDragging);
     canvas.addEventListener('wheel', event => { event.preventDefault(); zoom = Math.max(.3, Math.min(4, zoom * Math.exp(-event.deltaY*.001))); draw(); }, {passive:false});
     window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('load', resizeCanvas);
+    if ('ResizeObserver' in window) new ResizeObserver(resizeCanvas).observe(canvas);
     thresholdValue.textContent = Number(threshold.value).toFixed(2);
     renderRows();
     resizeCanvas();
+    requestAnimationFrame(resizeCanvas);
   </script>
 </body>
 </html>

@@ -137,6 +137,21 @@ class RTMW3DInspectorTests(unittest.TestCase):
         self.assertIn("yaw += (event.clientX-lastX)*.01", viewer)
         self.assertNotIn("pitch +=", viewer)
 
+    def test_viewer_keeps_original_depth_order_and_recovers_pointer(self):
+        viewer = (Path(__file__).resolve().parents[1]
+                  / "tools" / "rtmw3d_viewer.html").read_text(
+                      encoding="utf-8")
+        self.assertIn("b.point.z_relative_m - a.point.z_relative_m", viewer)
+        self.assertIn("'pointercancel', stopDragging", viewer)
+        self.assertIn("'lostpointercapture', stopDragging", viewer)
+
+    def test_viewer_tracks_post_layout_canvas_size(self):
+        viewer = (Path(__file__).resolve().parents[1]
+                  / "tools" / "rtmw3d_viewer.html").read_text(
+                      encoding="utf-8")
+        self.assertIn("new ResizeObserver(resizeCanvas).observe(canvas)", viewer)
+        self.assertIn("window.addEventListener('load', resizeCanvas)", viewer)
+
 
 if __name__ == "__main__":
     unittest.main()
