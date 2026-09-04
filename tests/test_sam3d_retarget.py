@@ -63,13 +63,11 @@ def skeleton():
     return points
 
 
-def sam_output(points=None, camera=None, focal_length=None):
+def sam_output(points=None):
     return {
         "joints": skeleton() if points is None else points,
-        "camera": np.array(
-            [0.0, 0.0, 5.0] if camera is None else camera),
-        "focal_length": np.array(
-            [800.0] if focal_length is None else focal_length),
+        "camera": np.array([0.0, 0.0, 5.0]),
+        "focal_length": np.array([800.0]),
     }
 
 
@@ -84,12 +82,12 @@ class SAM3DRetargetTests(unittest.TestCase):
         output, details = sr.retarget_mhr70(
             reference, driving, reference_symmetry="off")
 
-        expected_length = 0.48 * details["uniform_scale"]
+        expected_length = 0.48 * details["base_scale"]
         actual = output[sr.LEFT_ELBOW] - output[sr.LEFT_SHOULDER]
         self.assertAlmostEqual(np.linalg.norm(actual), expected_length, places=7)
         np.testing.assert_allclose(actual / np.linalg.norm(actual), (0.0, 0.0, -1.0))
 
-    def test_reference_lengths_survive_large_scale_and_side_rotation(self):
+    def test_reference_proportions_survive_large_scale_and_side_rotation(self):
         reference = skeleton()
         reference[sr.LEFT_SHOULDER] = (0.34, -0.58, 0.0)
         reference[sr.RIGHT_SHOULDER] = (-0.34, -0.58, 0.0)
@@ -109,9 +107,9 @@ class SAM3DRetargetTests(unittest.TestCase):
         output, details = sr.retarget_mhr70(
             reference, driving, reference_symmetry="off")
 
-        for name, expected in details["reference_measurements"].items():
+        for name, expected in details["reference_proportions"].items():
             self.assertAlmostEqual(
-                details["generated_measurements"][name], expected,
+                details["generated_proportions"][name], expected,
                 places=7, msg=name)
 
         driving_direction = (
@@ -122,28 +120,22 @@ class SAM3DRetargetTests(unittest.TestCase):
             output_direction / np.linalg.norm(output_direction),
             driving_direction / np.linalg.norm(driving_direction),
         )
-        self.assertAlmostEqual(
-            sr.body_measurements(output)["torso"],
-            details["reference_measurements"]["torso"],
-            places=7,
-        )
 
-    def test_reference_root_and_uniform_scale_define_output_placement_and_size(self):
-        reference = skeleton() + np.array([0.35, -0.20, 0.45])
-        driving = skeleton() * 3.0 + np.array([-1.5, 0.80, -0.60])
+    def test_each_size_reference_matches_driving_unit_by_default(self):
+        reference = skeleton()
+        driving = skeleton() * 1.85
 
-        output, details = sr.retarget_mhr70(
-            reference, driving, reference_symmetry="off",
-            uniform_scale=1.20)
+        for mode in ("torso", "shoulder_width", "body_height"):
+            with self.subTest(mode=mode):
+                output, details = sr.retarget_mhr70(
+                    reference, driving, size_reference=mode,
+                    reference_symmetry="off")
 
-        np.testing.assert_allclose(
-            sr.hip_center(output), sr.hip_center(reference))
-        self.assertAlmostEqual(details["uniform_scale"], 1.20, places=7)
-        self.assertAlmostEqual(
-            sr.body_measurements(output)["torso"],
-            details["reference_measurements"]["torso"] * 1.20,
-            places=7,
-        )
+                self.assertAlmostEqual(
+                    sr.body_unit(output, mode),
+                    details["driving_unit"],
+                    places=7,
+                )
 
     def test_detailed_scales_control_each_reported_proportion(self):
         reference = skeleton()
@@ -166,8 +158,8 @@ class SAM3DRetargetTests(unittest.TestCase):
             shin_scale=0.70,
         )
 
-        reference_lengths = details["reference_measurements"]
-        generated_lengths = details["generated_measurements"]
+        reference_ratios = details["reference_proportions"]
+        generated_ratios = details["generated_proportions"]
         expected_scales = {
             "torso": 1.30,
             "shoulder_width": 0.80,
@@ -180,8 +172,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         }
         for name, multiplier in expected_scales.items():
             self.assertAlmostEqual(
-                generated_lengths[name],
-                reference_lengths[name] * multiplier,
+                generated_ratios[name],
+                reference_ratios[name] * multiplier,
                 places=7,
                 msg=name,
             )
@@ -199,8 +191,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         actual = np.linalg.norm(
             output[sr.NOSE] - sr.shoulder_center(output))
         expected = (
-            details["reference_measurements"]["shoulder_to_nose"]
-            * 1.25 * 0.80
+            details["reference_proportions"]["shoulder_to_nose"]
+            * details["driving_unit"] * 1.25 * 0.80
         )
         self.assertAlmostEqual(actual, expected, places=7)
 
@@ -260,47 +252,22 @@ class SAM3DRetargetTests(unittest.TestCase):
     def test_node_accepts_sam3d_output_and_returns_pose_keypoint(self):
         node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         node = node_class()
-        reference_image = np.zeros((1, 640, 480, 3), dtype=np.float32)
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
 
         output, report = node.run(
-            sam_output(), sam_output(), reference_image,
-            "average",
+            sam_output(), sam_output(), image,
+            "torso", "average",
             1.0, 1.0, 1.0, 1.0, 1.0,
             "off", 16)
 
-        self.assertEqual(output[0]["canvas_width"], 480)
-        self.assertEqual(output[0]["canvas_height"], 640)
+        self.assertEqual(output[0]["canvas_width"], 384)
+        self.assertEqual(output[0]["canvas_height"], 512)
         person = output[0]["people"][0]
         self.assertEqual(len(person["pose_keypoints_2d"]), 18 * 3)
         self.assertEqual(len(person["hand_left_keypoints_2d"]), 21 * 3)
         self.assertIn("SAM 3D Body retargeted", report)
-        self.assertIn("Lengths reference->generated", report)
+        self.assertIn("Ratios reference->generated", report)
         self.assertIn("shoulder_to_nose:", report)
-        self.assertIn("size_source=reference", report)
-        self.assertIn("camera_source=reference", report)
-        self.assertIn("canvas_source=reference", report)
-
-    def test_node_projects_with_reference_camera_not_driving_camera(self):
-        node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
-        node = node_class()
-        reference_image = np.zeros((1, 600, 400, 3), dtype=np.float32)
-        reference = sam_output(camera=[0.0, 0.0, 5.0], focal_length=[700.0])
-        driving = sam_output(camera=[8.0, -4.0, 0.1], focal_length=[120.0])
-
-        output, _ = node.run(
-            reference, driving, reference_image,
-            "off",
-            1.0, 1.0, 1.0, 1.0, 1.0,
-            "off", 16)
-
-        retargeted, _ = sr.retarget_mhr70(
-            sr.extract_mhr70(reference), sr.extract_mhr70(driving),
-            reference_symmetry="off")
-        expected, valid, _ = sr.project_mhr70(
-            retargeted, np.array([0.0, 0.0, 5.0]),
-            np.array([700.0, 700.0]), 400, 600)
-        expected_pose = sr.to_pose_keypoint(expected, valid, 400, 600)
-        self.assertEqual(output, expected_pose)
 
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
         package = load_package()
@@ -311,13 +278,8 @@ class SAM3DRetargetTests(unittest.TestCase):
 
         self.assertEqual(inputs["reference_sam3d"], ("SAM3D_OUTPUT",))
         self.assertEqual(inputs["driving_sam3d"], ("SAM3D_OUTPUT",))
-        self.assertEqual(inputs["reference_image"], ("IMAGE",))
-        self.assertNotIn("size_reference", inputs)
+        self.assertEqual(inputs["driving_image"], ("IMAGE",))
         self.assertEqual(inputs["reference_symmetry"], (["average", "off"],))
-        self.assertEqual(
-            inputs["fit_to_canvas"],
-            (["off", "shrink_to_fit", "fit_exactly"],),
-        )
         for name in (
                 "torso_scale", "shoulder_width_scale", "hip_width_scale",
                 "neck_scale", "upper_arm_scale", "forearm_scale",

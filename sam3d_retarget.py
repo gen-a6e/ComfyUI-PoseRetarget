@@ -195,6 +195,31 @@ def _edge_delta(points, child, parent):
     return points[child] - origin
 
 
+def body_unit(points, mode="torso"):
+    """Return a pose-resistant 3D size unit for proportion transfer."""
+    torso = np.linalg.norm(points[NECK] - hip_center(points))
+    shoulder = np.linalg.norm(points[LEFT_SHOULDER] - points[RIGHT_SHOULDER])
+    body_height = (
+        torso
+        + np.linalg.norm(points[NOSE] - shoulder_center(points))
+        + 0.5 * (
+            np.linalg.norm(points[LEFT_KNEE] - points[LEFT_HIP])
+            + np.linalg.norm(points[RIGHT_KNEE] - points[RIGHT_HIP]))
+        + 0.5 * (
+            np.linalg.norm(points[LEFT_ANKLE] - points[LEFT_KNEE])
+            + np.linalg.norm(points[RIGHT_ANKLE] - points[RIGHT_KNEE]))
+    )
+    candidates = {
+        "torso": (torso, shoulder, body_height),
+        "shoulder_width": (shoulder, torso, body_height),
+        "body_height": (body_height, torso, shoulder),
+    }.get(mode, (torso, shoulder, body_height))
+    for value in candidates:
+        if np.isfinite(value) and value > EPS:
+            return float(value)
+    raise ValueError("SAM3D skeleton has no usable body-size measurement")
+
+
 def reference_lengths(points, symmetry="average"):
     lengths = {
         child: float(np.linalg.norm(_edge_delta(points, child, parent)))
@@ -246,6 +271,16 @@ def body_measurements(points):
     }
 
 
+def normalized_body_proportions(points, unit):
+    """Normalize report measurements by one explicit body-size unit."""
+    if not np.isfinite(unit) or unit <= EPS:
+        raise ValueError("body-size unit must be positive")
+    return {
+        name: value / float(unit)
+        for name, value in body_measurements(points).items()
+    }
+
+
 def _unit_direction(primary, fallback):
     """Return a stable unit vector, preferring the driving-pose direction."""
     for value in (primary, fallback):
@@ -263,8 +298,8 @@ def _place_edge(output, driving, reference, child, parent, target_length):
     output[child] = output[parent] + direction * target_length
 
 
-def retarget_mhr70(reference, driving, reference_symmetry="average",
-                   uniform_scale=1.0,
+def retarget_mhr70(reference, driving, size_reference="torso",
+                   reference_symmetry="average", uniform_scale=1.0,
                    leg_scale=1.0, arm_scale=1.0, head_scale=1.0,
                    hand_scale=1.0, torso_scale=1.0,
                    shoulder_width_scale=1.0, hip_width_scale=1.0,
@@ -277,12 +312,19 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     if reference.shape != (MHR70_COUNT, 3) or driving.shape != (MHR70_COUNT, 3):
         raise ValueError("reference and driving joints must both have shape (70, 3)")
 
-    scale = float(uniform_scale)
-    lengths = reference_lengths(reference, reference_symmetry)
-    reference_measurements = body_measurements(reference)
+    ref_unit = body_unit(reference, size_reference)
+    drv_unit = body_unit(driving, size_reference)
+    base_scale = drv_unit / ref_unit * float(uniform_scale)
+    target_unit = drv_unit * float(uniform_scale)
+    length_ratios = {
+        child: length / ref_unit
+        for child, length in reference_lengths(
+            reference, reference_symmetry).items()
+    }
+    reference_proportions = normalized_body_proportions(reference, ref_unit)
 
-    output = reference.copy()
-    root = hip_center(reference)
+    output = driving.copy()
+    root = hip_center(driving)
 
     # Build the central body explicitly. This makes widths exact instead of
     # treating the left and right halves as unrelated bones.
@@ -291,7 +333,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
         reference[LEFT_HIP] - reference[RIGHT_HIP],
     )
     hip_width = (
-        reference_measurements["hip_width"] * scale
+        reference_proportions["hip_width"] * target_unit
         * float(hip_width_scale)
     )
     output[LEFT_HIP] = root + hip_axis * hip_width * 0.5
@@ -302,7 +344,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
         reference[NECK] - hip_center(reference),
     )
     torso_length = (
-        reference_measurements["torso"] * scale
+        reference_proportions["torso"] * target_unit
         * float(torso_scale)
     )
     output[NECK] = root + torso_direction * torso_length
@@ -312,7 +354,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
         reference[LEFT_SHOULDER] - reference[RIGHT_SHOULDER],
     )
     shoulder_width = (
-        reference_measurements["shoulder_width"] * scale
+        reference_proportions["shoulder_width"] * target_unit
         * float(shoulder_width_scale)
     )
     output[LEFT_SHOULDER] = (
@@ -341,7 +383,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     for child, parent, part_scale in edge_scales:
         _place_edge(
             output, driving, reference, child, parent,
-            lengths[child] * scale * part_scale,
+            length_ratios[child] * target_unit * part_scale,
         )
 
     for child, parent, _ in BODY_EDGES:
@@ -349,7 +391,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
             continue
         _place_edge(
             output, driving, reference, child, parent,
-            lengths[child] * scale * float(leg_scale),
+            length_ratios[child] * target_unit * float(leg_scale),
         )
 
     # Shoulder center -> nose is a direct reference proportion. Anchoring it
@@ -361,7 +403,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
         reference[NOSE] - reference_shoulders,
     )
     neck_length = (
-        reference_measurements["shoulder_to_nose"] * scale
+        reference_proportions["shoulder_to_nose"] * target_unit
         * float(head_scale) * float(neck_scale)
     )
     output[NOSE] = shoulder_center(output) + nose_direction * neck_length
@@ -371,27 +413,31 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
             (LEFT_EAR, LEFT_EYE), (RIGHT_EAR, RIGHT_EYE)):
         _place_edge(
             output, driving, reference, child, parent,
-            lengths[child] * scale * float(head_scale),
+            length_ratios[child] * target_unit * float(head_scale),
         )
 
     for child, parent, _ in HAND_EDGES:
         _place_edge(
             output, driving, reference, child, parent,
-            lengths[child] * scale
+            length_ratios[child] * target_unit
             * float(arm_scale) * float(hand_scale),
         )
 
     details = {
-        "uniform_scale": scale,
-        "reference_measurements": reference_measurements,
-        "generated_measurements": body_measurements(output),
+        "reference_unit": ref_unit,
+        "driving_unit": drv_unit,
+        "base_scale": base_scale,
+        "size_reference": size_reference,
+        "reference_proportions": reference_proportions,
+        "generated_proportions": normalized_body_proportions(
+            output, target_unit),
     }
     return output, details
 
 
 def extract_camera(output):
     if not isinstance(output, dict):
-        raise ValueError("SAM3D input must be a dictionary")
+        raise ValueError("driving SAM3D input must be a dictionary")
     raw = output.get("raw_output") or {}
     camera = output.get("camera")
     if camera is None:
@@ -485,8 +531,8 @@ def to_pose_keypoint(projected, valid, width, height):
 def image_size(image):
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) < 3:
-        raise ValueError("reference_image must be a ComfyUI IMAGE tensor")
+        raise ValueError("driving_image must be a ComfyUI IMAGE tensor")
     height, width = int(shape[-3]), int(shape[-2])
     if width <= 0 or height <= 0:
-        raise ValueError("reference_image has an invalid size")
+        raise ValueError("driving_image has an invalid size")
     return width, height
