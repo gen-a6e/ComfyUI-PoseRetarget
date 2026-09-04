@@ -181,7 +181,7 @@ class HeadSizeTests(unittest.TestCase):
         # An angled/asymmetric hip layout makes the rebuilt output torso differ
         # from the driving torso used for retarget_body's initial scale.
         driving_body[pr.R_HIP, :2] = (-75.0, 115.0)
-        driving_body[pr.L_HIP, :2] = (35.0, 205.0)
+        driving_body[pr.L_HIP, :2] = (75.0, 205.0)
 
         def frame(body):
             return [{
@@ -218,6 +218,43 @@ class HeadSizeTests(unittest.TestCase):
         np.testing.assert_allclose(output_direction, driving_direction,
                                    atol=1e-6)
         self.assertIn("reference=0.300", report)
+
+    def test_side_view_projection_extends_neck_length(self):
+        reference_body = body_with_unit(100.0, face_span=30.0)
+        driving_body = body_with_unit(100.0, face_span=20.0)
+        # Local torso-up is (0, -1). A 30/40/50 neck triangle therefore
+        # carries a 50/40 = 1.25 apparent side-view multiplier.
+        driving_body[pr.NOSE, :2] = (30.0, -40.0)
+
+        output, details = pr.enforce_neck_ratio(
+            reference_body, driving_body, "torso", driving_body)
+        output_ratio = (
+            pr._joint_span(output, pr.ROOT, pr.NOSE)
+            / pr._body_unit(output, "torso"))
+
+        self.assertAlmostEqual(details["projection_factor"], 1.25,
+                               places=5)
+        self.assertAlmostEqual(output_ratio, 0.3 * 1.25, places=5)
+
+    def test_neck_projection_factor_is_capped(self):
+        driving_body = body_with_unit(100.0, face_span=20.0)
+        driving_body[pr.NOSE, :2] = (100.0, -1.0)
+
+        factor, raw_factor = pr.neck_projection_factor(driving_body)
+
+        self.assertGreater(raw_factor, pr.MAX_NECK_PROJECTION_FACTOR)
+        self.assertEqual(factor, pr.MAX_NECK_PROJECTION_FACTOR)
+
+    def test_neck_projection_ignores_whole_torso_lean(self):
+        driving_body = body_with_unit(100.0, face_span=20.0)
+        driving_body[pr.R_HIP, :2] = (20.0, 100.0)
+        driving_body[pr.L_HIP, :2] = (40.0, 100.0)
+        # Hip-centre -> neck is (-30, -100); keep neck -> nose parallel.
+        driving_body[pr.NOSE, :2] = (-6.0, -20.0)
+
+        factor, _ = pr.neck_projection_factor(driving_body)
+
+        self.assertAlmostEqual(factor, 1.0, places=5)
 
     def test_node_schema_has_no_source_or_person_selectors(self):
         inputs = load_node_class().INPUT_TYPES()["required"]

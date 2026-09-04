@@ -42,6 +42,7 @@ R_EAR, L_EAR = 16, 17
 HEAD_JOINTS = (NOSE, R_EYE, L_EYE, R_EAR, L_EAR)
 
 EPS = 1e-6
+MAX_NECK_PROJECTION_FACTOR = 1.5
 
 # Approximate un-foreshortened bone lengths, expressed in torso units
 # (torso = neck -> hip centre). Used only as a fallback when symmetry
@@ -322,7 +323,61 @@ def scale_head_keypoints(arr, factor, include_neck_to_nose=False):
     return out
 
 
-def enforce_neck_ratio(reference_body, current_body, size_mode):
+def _body_up_direction(arr):
+    """Return a local image-plane up axis for the driving torso."""
+    if (_valid(arr, ROOT) and _valid(arr, R_HIP)
+            and _valid(arr, L_HIP)):
+        hip = (arr[R_HIP, :2] + arr[L_HIP, :2]) / 2.0
+        axis = arr[ROOT, :2] - hip
+        length = float(np.linalg.norm(axis))
+        if length > EPS:
+            return axis / length
+
+    if (_valid(arr, ROOT) and _valid(arr, R_SHO)
+            and _valid(arr, L_SHO)):
+        shoulder_axis = arr[L_SHO, :2] - arr[R_SHO, :2]
+        length = float(np.linalg.norm(shoulder_axis))
+        if length > EPS:
+            axis = np.array(
+                [shoulder_axis[1], -shoulder_axis[0]], dtype=np.float32)
+            if (_valid(arr, NOSE)
+                    and np.dot(axis, arr[NOSE, :2] - arr[ROOT, :2]) < 0):
+                axis *= -1.0
+            return axis / length
+    return None
+
+
+def neck_projection_factor(driving_body,
+                           max_factor=MAX_NECK_PROJECTION_FACTOR):
+    """Estimate the apparent side-view extension of neck-to-nose.
+
+    The anatomical vector has an upward component and a forward component.
+    In a front view the forward component is hidden; toward a profile view it
+    appears in the image plane.  Dividing the complete 2D vector by its
+    projection onto the local torso-up axis gives the same ``1 / cos(theta)``
+    multiplier without explicitly calculating an angle.
+    """
+    if not (_valid(driving_body, ROOT) and _valid(driving_body, NOSE)):
+        return 1.0, 1.0
+    up = _body_up_direction(driving_body)
+    if up is None:
+        return 1.0, 1.0
+
+    vector = driving_body[NOSE, :2] - driving_body[ROOT, :2]
+    length = float(np.linalg.norm(vector))
+    if length <= EPS:
+        return 1.0, 1.0
+    frontal_component = abs(float(np.dot(vector, up)))
+    if frontal_component <= EPS:
+        raw_factor = float("inf")
+    else:
+        raw_factor = max(1.0, length / frontal_component)
+    factor = min(float(max_factor), raw_factor)
+    return factor, raw_factor
+
+
+def enforce_neck_ratio(reference_body, current_body, size_mode,
+                       driving_body=None):
     """Match shoulder-centre-to-nose proportion after body retargeting.
 
     ``retarget_body`` initially scales the reference neck-to-nose segment
@@ -332,7 +387,9 @@ def enforce_neck_ratio(reference_body, current_body, size_mode):
 
     Move the complete COCO head chain without scaling it.  This preserves the
     driving head direction and the face size while making the final ratio
-    exact for the body that was actually produced.
+    exact for the body that was actually produced.  A driving-side projection
+    multiplier retains the extra 2D length visible when the nose points away
+    from the local torso-up axis toward a profile view.
     """
     out = current_body.copy()
     if not (_valid(reference_body, ROOT)
@@ -353,7 +410,10 @@ def enforce_neck_ratio(reference_body, current_body, size_mode):
 
     source_ratio = reference_length / reference_unit
     before_ratio = current_length / current_unit
-    target_length = source_ratio * current_unit
+    projection_factor, raw_projection_factor = neck_projection_factor(
+        driving_body if driving_body is not None else current_body)
+    target_ratio = source_ratio * projection_factor
+    target_length = target_ratio * current_unit
     direction = (out[NOSE, :2] - out[ROOT, :2]) / current_length
     target_nose = out[ROOT, :2] + direction * target_length
     shift = (target_nose - out[NOSE, :2]).astype(np.float32)
@@ -362,17 +422,18 @@ def enforce_neck_ratio(reference_body, current_body, size_mode):
         if _valid(out, joint):
             out[joint, :2] += shift
 
-    final_unit = _body_unit(out, size_mode)
     final_length = _joint_span(out, ROOT, NOSE)
     after_ratio = (
-        final_length / final_unit
-        if final_length is not None and final_unit is not None
-        and final_unit > EPS
+        final_length / current_unit
+        if final_length is not None and current_unit > EPS
         else None
     )
     return out, {
         "source_ratio": float(source_ratio),
         "before_ratio": float(before_ratio),
+        "target_ratio": float(target_ratio),
+        "projection_factor": float(projection_factor),
+        "raw_projection_factor": float(raw_projection_factor),
         "after_ratio": (float(after_ratio)
                         if after_ratio is not None else None),
         "shift": shift,

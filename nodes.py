@@ -193,7 +193,7 @@ class PoseRetargetProportions:
                 # the hips/shoulders can change its final size relative to the
                 # driving pose used by retarget_body's first estimate.
                 out, neck_details = enforce_neck_ratio(
-                    ref, out, size_reference)
+                    ref, out, size_reference, drv)
                 if neck_details:
                     neck_shift = neck_details["shift"]
                     face = extras.get("face_keypoints_2d")
@@ -204,8 +204,15 @@ class PoseRetargetProportions:
                         "neck shoulder_center_to_nose/"
                         f"{size_reference}: "
                         f"reference={neck_details['source_ratio']:.3f}, "
+                        f"projection={neck_details['projection_factor']:.3f}, "
+                        f"target={neck_details['target_ratio']:.3f}, "
                         f"before={neck_details['before_ratio']:.3f}, "
                         f"after={neck_details['after_ratio']:.3f}")
+                    if (neck_details["raw_projection_factor"]
+                            > neck_details["projection_factor"] + EPS):
+                        neck_notes[-1] += (
+                            " (projection capped from "
+                            f"{neck_details['raw_projection_factor']:.3f})")
                 else:
                     neck_notes.append(
                         "neck shoulder_center_to_nose unavailable; "
