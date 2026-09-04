@@ -178,6 +178,22 @@
       const z2 = point.camera_y_m * sp + z1 * cp;
       return {x:x1, y:y1, z:z2};
     }
+    function framing(points) {
+      const xs = points.map(point => point.camera_x_m);
+      const ys = points.map(point => point.camera_y_m);
+      const zs = points.map(point => point.camera_z_m);
+      const center = {
+        camera_x_m:(Math.min(...xs) + Math.max(...xs)) / 2,
+        camera_y_m:(Math.min(...ys) + Math.max(...ys)) / 2,
+        camera_z_m:(Math.min(...zs) + Math.max(...zs)) / 2,
+      };
+      const radius = Math.max(...points.map(point => Math.hypot(
+        point.camera_x_m - center.camera_x_m,
+        point.camera_y_m - center.camera_y_m,
+        point.camera_z_m - center.camera_z_m,
+      )), .05);
+      return {center, radius};
+    }
     function depthColor(z, maxDepth) {
       const amount = Math.min(Math.abs(z) / Math.max(maxDepth, 0.001), 1);
       const neutral = [255, 224, 102];
@@ -213,17 +229,23 @@
     function draw() {
       const rect = canvas.getBoundingClientRect(), width = rect.width, height = rect.height;
       ctx.clearRect(0, 0, width, height);
-      const transformed = data.keypoints.map(rotate);
-      const visible = data.keypoints.map((point, index) => ({point, index, r:transformed[index]})).filter(item => active(item.point));
-      if (!visible.length) {
+      const activePoints = data.keypoints.filter(active);
+      if (!activePoints.length) {
         ctx.fillStyle = '#96a5bd'; ctx.fillText('No points above this confidence threshold', 20, 30); return;
       }
-      const xs = visible.map(item => item.r.x), ys = visible.map(item => item.r.y);
-      const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-      const spanX = Math.max(maxX - minX, .05), spanY = Math.max(maxY - minY, .05);
-      const scale = Math.min((width - 70) / spanX, (height - 70) / spanY) * .88 * zoom;
-      const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
-      const project = point => ({x:width/2 + (point.x-centerX)*scale, y:height/2 - (point.y-centerY)*scale});
+      const frame = framing(activePoints);
+      const transformed = data.keypoints.map(point => rotate({
+        camera_x_m:point.camera_x_m - frame.center.camera_x_m,
+        camera_y_m:point.camera_y_m - frame.center.camera_y_m,
+        camera_z_m:point.camera_z_m - frame.center.camera_z_m,
+      }));
+      const visible = data.keypoints.map((point, index) => ({point, index, r:transformed[index]})).filter(item => active(item.point));
+      const available = Math.max(1, Math.min(width - 70, height - 70));
+      // A 3D bounding radius is invariant under rotation.  Using it instead
+      // of the projected X/Y bounds prevents dragging from auto-zooming.
+      const scale = available / (frame.radius * 2) * .88 * zoom;
+      const project = point => ({x:width/2 + point.x*scale, y:height/2 - point.y*scale});
+      canvas.dataset.renderScale = String(scale);
       const maxDepth = Math.max(...visible.map(item => Math.abs(item.point.z_relative_m)), .001);
 
       ctx.lineCap = 'round'; ctx.lineWidth = 1.6;

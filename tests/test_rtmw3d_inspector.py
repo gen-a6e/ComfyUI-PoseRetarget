@@ -116,6 +116,13 @@ class RTMW3DInspectorTests(unittest.TestCase):
             Path("reports"), Path("my pose (front).png"))
         self.assertEqual(output, Path("reports/my_pose__front_"))
 
+    def test_viewer_scale_is_independent_of_projected_rotation(self):
+        viewer = (Path(__file__).resolve().parents[1]
+                  / "tools" / "rtmw3d_viewer.html").read_text(
+                      encoding="utf-8")
+        self.assertIn("available / (frame.radius * 2)", viewer)
+        self.assertNotIn("(width - 70) / spanX", viewer)
+
 
 if __name__ == "__main__":
     unittest.main()
