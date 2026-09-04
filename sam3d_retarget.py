@@ -314,8 +314,10 @@ def retarget_mhr70(reference, driving, size_reference="torso",
 
     ref_unit = body_unit(reference, size_reference)
     drv_unit = body_unit(driving, size_reference)
-    base_scale = drv_unit / ref_unit * float(uniform_scale)
-    target_unit = drv_unit * float(uniform_scale)
+    # The reference owns absolute character size as well as proportions.
+    # Driving contributes only bone directions (the pose).
+    base_scale = float(uniform_scale)
+    target_unit = ref_unit * base_scale
     length_ratios = {
         child: length / ref_unit
         for child, length in reference_lengths(
@@ -323,8 +325,8 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     }
     reference_proportions = normalized_body_proportions(reference, ref_unit)
 
-    output = driving.copy()
-    root = hip_center(driving)
+    output = reference.copy()
+    root = hip_center(reference)
 
     # Build the central body explicitly. This makes widths exact instead of
     # treating the left and right halves as unrelated bones.
@@ -437,7 +439,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
 
 def extract_camera(output):
     if not isinstance(output, dict):
-        raise ValueError("driving SAM3D input must be a dictionary")
+        raise ValueError("SAM3D input must be a dictionary")
     raw = output.get("raw_output") or {}
     camera = output.get("camera")
     if camera is None:
@@ -531,8 +533,8 @@ def to_pose_keypoint(projected, valid, width, height):
 def image_size(image):
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) < 3:
-        raise ValueError("driving_image must be a ComfyUI IMAGE tensor")
+        raise ValueError("reference_image must be a ComfyUI IMAGE tensor")
     height, width = int(shape[-3]), int(shape[-2])
     if width <= 0 or height <= 0:
-        raise ValueError("driving_image has an invalid size")
+        raise ValueError("reference_image has an invalid size")
     return width, height
