@@ -1,7 +1,9 @@
 # comfyui-pose-retarget
 
-ポーズ画像から**関節の角度だけ**を取り、骨の長さは**参照画像から**取って骨格を組み直すノードです。
-結果として「参照画像の体型のまま、ポーズ画像のポーズ」の OpenPose 骨格が得られます。
+参照画像の体型と、別画像のポーズを組み合わせてOpenPose骨格を作るComfyUIノードです。
+
+- `SAM 3D Body Pose Retarget`: SAM 3D Bodyの3D骨格を使う高精度版
+- `Pose Retarget (keep body proportions)`: DWPose/OpenPoseだけで動く軽量な2D版
 
 既存のリターゲット系ノードは全身を一律に拡大縮小するものが多く、頭身などの比率は変わりません。
 これは部位ごとの骨の長さを個別に差し替えます。
@@ -13,92 +15,63 @@ cd ComfyUI/custom_nodes
 git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
 ```
 
-追加の依存パッケージはありません（numpy は ComfyUI に同梱）。
+このリポジトリ自体に追加の依存パッケージはありません（numpyはComfyUIに同梱）。
 ComfyUI を再起動してください。
 
 フォルダ名は何でも構いません。ブラウザ側の JS を使っていないので、
 Manager がフォルダ名を変えても壊れません。
 
-## RTMW3D Inspector（任意）
+## SAM 3D Body版
 
-画像1枚からRTMW3D-Xの全133点を推定し、奥行きが正しく取れているかを
-確認するための独立した検証ツールです。Pose Retargetノードの動作や依存関係には
-影響しません。Python 3.10以上が必要です。
+3D推定には既存の
+[`ComfyUI-SAM3DBody`](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody)
+を利用します。ComfyUI Managerで`SAM3DBody`を検索してインストールしてください。
+モデルのロードとVRAM管理は同拡張機能が担当し、このリポジトリではモデルを複製しません。
+`(Down)Load SAM 3D Body Model`の出力を、reference用とdriving用の
+`SAM 3D Body: Process Image`へ接続し、両方とも`inference_type=full`で実行します。
 
-ComfyUI環境を汚さないよう、専用の仮想環境での実行を推奨します。
+### SAM 3D Body Pose Retarget
 
-```bash
-python -m venv .venv-rtmw3d
+`SAM 3D Body: Process Image`が出力する2つの`SAM3D_OUTPUT`を受け取ります。
+referenceのMHR70骨格から3D骨長比を測り、drivingの3Dボーン方向へ適用したあと、
+driving側のカメラと焦点距離で2Dへ透視投影します。横向きや手足をカメラへ向けた
+ポーズでも、2Dの見かけの長さから奥行きを推測する必要がありません。
+
+| 入力 | 説明 |
+|---|---|
+| `reference_sam3d` | reference画像を`SAM 3D Body: Process Image`へ通した`SAM3D_OUTPUT` |
+| `driving_sam3d` | driving画像を同ノードへ通した`SAM3D_OUTPUT` |
+| `driving_image` | drivingに使った元画像。出力キャンバスの幅・高さを取得するために必要 |
+
+| パラメータ | 既定 | 説明 |
+|---|---|---|
+| `size_reference` | torso | 画面内の人物サイズを合わせるための3D基準。torso / shoulder_width / body_height |
+| `reference_symmetry` | average | referenceの左右で推定誤差が出たときの骨長補正 |
+| `uniform_scale` | 1.0 | 腰中央を基準にした全身サイズ |
+| `leg_scale` | 1.0 | 脚と足の追加倍率 |
+| `arm_scale` | 1.0 | 腕と手の追加倍率 |
+| `head_scale` | 1.0 | 首から上の追加倍率 |
+| `hand_scale` | 1.0 | 手指の追加倍率 |
+| `fit_to_canvas` | shrink_to_fit | はみ出した場合のキャンバス調整 |
+| `canvas_margin` | 16 | fit_exactly、または縮小が必要な場合の余白 |
+
+MHR70には鼻・目・耳はありますが、輪郭や口を含む密な顔ランドマークはありません。
+そのためBODY18の顔点は出力し、`face_keypoints_2d`の70点はゼロconfidenceにします。
+左右の手はそれぞれ21点を出力します。
+
+```text
+(Down)Load SAM 3D Body Model ─┬→ Process Image ← reference画像 ─┐
+                              └→ Process Image ← driving画像  ─┤
+driving画像 ───────────────────────────────────────────────────┤
+                                                               ↓
+                                                  SAM 3D Body Pose Retarget
+                                                               ↓
+                                                  SDPose Draw → ControlNet
 ```
 
-Windows:
+現在は1画像・1人用です。複数人の場合、`SAM 3D Body: Process Image`が選んだ先頭の人物を使います。
 
-```powershell
-.venv-rtmw3d\Scripts\activate
-python -m pip install -r requirements-inspector.txt
-```
-
-macOS / Linux:
-
-```bash
-source .venv-rtmw3d/bin/activate
-python -m pip install -r requirements-inspector.txt
-```
-
-`requirements-inspector.txt`はCPU版ONNX Runtimeを導入します。NVIDIA GPUを使う場合は、
-必ず上記の専用仮想環境内でCPU版をGPU版へ入れ替えてください。
-
-```bash
-python -m pip uninstall -y onnxruntime
-python -m pip install onnxruntime-gpu
-```
-
-実行例:
-
-```bash
-python tools/rtmw3d_inspector.py input.png --device auto --open
-```
-
-初回だけRTMW3D-X（約369MB）と人物検出モデルをダウンロードして、
-rtmlibの標準キャッシュへ保存します。イラストで人物検出に問題がある場合は、
-人物検出を省略して画像全体を使えます。
-
-```bash
-python tools/rtmw3d_inspector.py input.png \
-  --device cuda --bbox-mode full-image --open
-```
-
-既定の出力先は`rtmw3d_reports/<画像名>/`です。
-
-- `overlay.png`: 元画像へ2D骨格を重ねた確認画像
-- `keypoints.json`: 全情報と座標系の説明
-- `keypoints.csv`: 全133点の座標・相対Z・信頼度
-- `viewer.html`: 外部ライブラリ不要の固定3方向・ズーム可能な3Dビューア
-
-ビューアではFront・Side・Topの固定投影を切り替え、身体・顔・左右の手を
-個別に表示できます。表の関節をクリックすると3D骨格上の点が強調されます。
-Zは腰中央を0とする相対奥行きで、負値がカメラ側、正値が奥側です。
-
-3D表示には、撮影距離や焦点距離を仮定したCamera XYZを使いません。X/Yは
-RTMW3Dの288x384入力グリッド、Zはモデルの±2.1744869mを288pxへ戻した
-深度グリッド値（`Z model px`）を使います。変換式は
-`Z model px = Z rel m × 66.22`です。これは元画像のピクセルではなく、
-RTMW3D内部でX/Y/Zを並べて確認するための共通表示座標です。
-
-`Depth scale`は小さなZ差を見やすくする表示倍率です。既定の`1.0`がモデル値そのまま、
-それ以外は表示だけを拡大し、JSON/CSVの数値には影響しません。
-
-主なオプション:
-
-- `--device auto|cpu|cuda|cuda:N|mps|rocm`
-- `--bbox-mode auto|full-image`
-- `--person-index N`: 複数人のうち出力する人物
-- `--confidence 0.3`: 表示・集計に使う信頼度の下限
-- `--cache-dir PATH`: モデルキャッシュの保存先
-- `--model PATH_OR_URL`: RTMW3D ONNXモデルを明示
-- `--detector PATH_OR_URL`: 人物検出モデルを明示
-
-## ノード
+## 2Dノード
 
 ### Pose Retarget (keep body proportions)
 

@@ -1,3 +1,0 @@
-# Optional dependencies for tools/rtmw3d_inspector.py only.
-# Python 3.10 or newer is required by rtmlib.
-rtmlib==0.0.16

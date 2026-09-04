@@ -1,5 +1,3 @@
-rtmw3d_reports/
-.venv-rtmw3d/
 __pycache__/
 *.py[cod]
 .DS_Store
