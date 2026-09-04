@@ -8,7 +8,8 @@ from .pose_retarget import (
     _anchor_shift, _apply_affine, _bone_lengths,
     _body_unit, _canvas, _as_frame_list, _is_normalized,
     _to_flat, _to_pixels, _valid, retarget_body, _fit_points,
-    head_correction_factor, scale_head_keypoints, symmetrize_lengths,
+    enforce_neck_ratio, head_correction_factor, scale_head_keypoints,
+    symmetrize_lengths,
 )
 
 
@@ -113,6 +114,7 @@ class PoseRetargetProportions:
         out_frames = []
         touched = 0
         head_notes = []
+        neck_notes = []
         ignored_driving_people = 0
         for frame in drv_frames:
             w, h = _canvas(frame)
@@ -187,6 +189,28 @@ class PoseRetargetProportions:
                         f"head metric {method}; "
                         f"manual head_scale={correction:.3f} only")
 
+                # Re-measure the body that was actually produced. Rebuilding
+                # the hips/shoulders can change its final size relative to the
+                # driving pose used by retarget_body's first estimate.
+                out, neck_details = enforce_neck_ratio(
+                    ref, out, size_reference)
+                if neck_details:
+                    neck_shift = neck_details["shift"]
+                    face = extras.get("face_keypoints_2d")
+                    if face is not None:
+                        extras["face_keypoints_2d"] = _apply_affine(
+                            face, 1.0, neck_shift)
+                    neck_notes.append(
+                        "neck shoulder_center_to_nose/"
+                        f"{size_reference}: "
+                        f"reference={neck_details['source_ratio']:.3f}, "
+                        f"before={neck_details['before_ratio']:.3f}, "
+                        f"after={neck_details['after_ratio']:.3f}")
+                else:
+                    neck_notes.append(
+                        "neck shoulder_center_to_nose unavailable; "
+                        "kept initial retarget")
+
                 # fit the WHOLE figure, face and hands included, so they
                 # cannot be clipped at the edge
                 if fit_to_canvas != "off":
@@ -224,6 +248,8 @@ class PoseRetargetProportions:
                          "measurements.")
         if head_notes:
             report += "\n" + "\n".join(head_notes)
+        if neck_notes:
+            report += "\n" + "\n".join(neck_notes)
         ignored_reference_people = max(0, len(ref_people) - 1)
         if ignored_reference_people or ignored_driving_people:
             report += ("\nWARNING: single-person node; ignored "

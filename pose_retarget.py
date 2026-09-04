@@ -322,6 +322,63 @@ def scale_head_keypoints(arr, factor, include_neck_to_nose=False):
     return out
 
 
+def enforce_neck_ratio(reference_body, current_body, size_mode):
+    """Match shoulder-centre-to-nose proportion after body retargeting.
+
+    ``retarget_body`` initially scales the reference neck-to-nose segment
+    using the *driving* body unit.  Rebuilding the hips and shoulders can
+    change the final output body unit, however, so that first estimate does
+    not guarantee that the final neck/body ratio matches the reference.
+
+    Move the complete COCO head chain without scaling it.  This preserves the
+    driving head direction and the face size while making the final ratio
+    exact for the body that was actually produced.
+    """
+    out = current_body.copy()
+    if not (_valid(reference_body, ROOT)
+            and _valid(reference_body, NOSE)
+            and _valid(out, ROOT)
+            and _valid(out, NOSE)):
+        return out, None
+
+    reference_unit = _body_unit(reference_body, size_mode)
+    current_unit = _body_unit(out, size_mode)
+    reference_length = _joint_span(reference_body, ROOT, NOSE)
+    current_length = _joint_span(out, ROOT, NOSE)
+    if (reference_unit is None or current_unit is None
+            or reference_length is None or current_length is None
+            or reference_unit <= EPS or current_unit <= EPS
+            or current_length <= EPS):
+        return out, None
+
+    source_ratio = reference_length / reference_unit
+    before_ratio = current_length / current_unit
+    target_length = source_ratio * current_unit
+    direction = (out[NOSE, :2] - out[ROOT, :2]) / current_length
+    target_nose = out[ROOT, :2] + direction * target_length
+    shift = (target_nose - out[NOSE, :2]).astype(np.float32)
+
+    for joint in HEAD_JOINTS:
+        if _valid(out, joint):
+            out[joint, :2] += shift
+
+    final_unit = _body_unit(out, size_mode)
+    final_length = _joint_span(out, ROOT, NOSE)
+    after_ratio = (
+        final_length / final_unit
+        if final_length is not None and final_unit is not None
+        and final_unit > EPS
+        else None
+    )
+    return out, {
+        "source_ratio": float(source_ratio),
+        "before_ratio": float(before_ratio),
+        "after_ratio": (float(after_ratio)
+                        if after_ratio is not None else None),
+        "shift": shift,
+    }
+
+
 # ---------------------------------------------------------------- core
 
 

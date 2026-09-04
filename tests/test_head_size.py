@@ -160,12 +160,64 @@ class HeadSizeTests(unittest.TestCase):
         output_ratio = (
             pr._face_extent(output_face)
             / pr._body_unit(output_body, "torso"))
-        output_neck_to_nose = np.linalg.norm(
-            output_body[pr.NOSE, :2] - output_body[pr.ROOT, :2])
+        reference_neck_ratio = (
+            np.linalg.norm(reference_body[pr.NOSE, :2]
+                           - reference_body[pr.ROOT, :2])
+            / pr._body_unit(reference_body, "torso"))
+        output_neck_ratio = (
+            np.linalg.norm(output_body[pr.NOSE, :2]
+                           - output_body[pr.ROOT, :2])
+            / pr._body_unit(output_body, "torso"))
 
         self.assertAlmostEqual(output_ratio, reference_ratio, places=5)
-        self.assertAlmostEqual(output_neck_to_nose, 40.0, places=5)
+        self.assertAlmostEqual(output_neck_ratio, reference_neck_ratio,
+                               places=5)
         self.assertIn("metric=face_landmarks", report)
+        self.assertIn("neck shoulder_center_to_nose/torso", report)
+
+    def test_final_neck_ratio_uses_retargeted_body_size(self):
+        reference_body = body_with_unit(100.0, face_span=30.0)
+        driving_body = body_with_unit(180.0, face_span=12.0)
+        # An angled/asymmetric hip layout makes the rebuilt output torso differ
+        # from the driving torso used for retarget_body's initial scale.
+        driving_body[pr.R_HIP, :2] = (-75.0, 115.0)
+        driving_body[pr.L_HIP, :2] = (35.0, 205.0)
+
+        def frame(body):
+            return [{
+                "canvas_width": 512,
+                "canvas_height": 512,
+                "people": [{
+                    "pose_keypoints_2d": body.reshape(-1).tolist(),
+                }],
+            }]
+
+        output, report = load_node_class()().run(
+            frame(reference_body), frame(driving_body),
+            "torso", "off", "neck",
+            1.0, 1.0, 1.0, 1.0,
+            "off", 0.15, 0.75, "off", 16)
+
+        output_body = np.asarray(
+            output[0]["people"][0]["pose_keypoints_2d"],
+            dtype=np.float32).reshape(-1, 3)
+        reference_ratio = (
+            pr._joint_span(reference_body, pr.ROOT, pr.NOSE)
+            / pr._body_unit(reference_body, "torso"))
+        output_ratio = (
+            pr._joint_span(output_body, pr.ROOT, pr.NOSE)
+            / pr._body_unit(output_body, "torso"))
+        driving_direction = (
+            driving_body[pr.NOSE, :2] - driving_body[pr.ROOT, :2])
+        driving_direction /= np.linalg.norm(driving_direction)
+        output_direction = (
+            output_body[pr.NOSE, :2] - output_body[pr.ROOT, :2])
+        output_direction /= np.linalg.norm(output_direction)
+
+        self.assertAlmostEqual(output_ratio, reference_ratio, places=5)
+        np.testing.assert_allclose(output_direction, driving_direction,
+                                   atol=1e-6)
+        self.assertIn("reference=0.300", report)
 
     def test_node_schema_has_no_source_or_person_selectors(self):
         inputs = load_node_class().INPUT_TYPES()["required"]
