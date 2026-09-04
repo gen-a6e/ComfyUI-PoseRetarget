@@ -120,8 +120,15 @@ class RTMW3DInspectorTests(unittest.TestCase):
         viewer = (Path(__file__).resolve().parents[1]
                   / "tools" / "rtmw3d_viewer.html").read_text(
                       encoding="utf-8")
-        self.assertIn("available / (frame.radius * 2)", viewer)
+        self.assertIn("available / (frameRadius * 2)", viewer)
         self.assertNotIn("(width - 70) / spanX", viewer)
+
+    def test_viewer_rotates_around_torso_instead_of_visible_bounds(self):
+        viewer = (Path(__file__).resolve().parents[1]
+                  / "tools" / "rtmw3d_viewer.html").read_text(
+                      encoding="utf-8")
+        self.assertIn("averagePoint([averagePoint(hips), averagePoint(shoulders)])", viewer)
+        self.assertNotIn("camera_x_m:(Math.min(...xs)", viewer)
 
 
 if __name__ == "__main__":

@@ -178,21 +178,46 @@
       const z2 = point.camera_y_m * sp + z1 * cp;
       return {x:x1, y:y1, z:z2};
     }
-    function framing(points) {
-      const xs = points.map(point => point.camera_x_m);
-      const ys = points.map(point => point.camera_y_m);
-      const zs = points.map(point => point.camera_z_m);
-      const center = {
-        camera_x_m:(Math.min(...xs) + Math.max(...xs)) / 2,
-        camera_y_m:(Math.min(...ys) + Math.max(...ys)) / 2,
-        camera_z_m:(Math.min(...zs) + Math.max(...zs)) / 2,
+    function averagePoint(points) {
+      return {
+        camera_x_m:points.reduce((sum, point) => sum + point.camera_x_m, 0) / points.length,
+        camera_y_m:points.reduce((sum, point) => sum + point.camera_y_m, 0) / points.length,
+        camera_z_m:points.reduce((sum, point) => sum + point.camera_z_m, 0) / points.length,
       };
+    }
+    function median(values) {
+      const sorted = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+    function rotationCenter() {
+      const usable = index => data.keypoints[index].score >= activeThreshold();
+      const hips = [11, 12].filter(usable).map(index => data.keypoints[index]);
+      const shoulders = [5, 6].filter(usable).map(index => data.keypoints[index]);
+      if (hips.length && shoulders.length) {
+        return averagePoint([averagePoint(hips), averagePoint(shoulders)]);
+      }
+      if (hips.length) return averagePoint(hips);
+
+      const body = data.keypoints.slice(0, 23).filter(point =>
+        point.score >= activeThreshold()
+        && Number.isFinite(point.camera_x_m)
+        && Number.isFinite(point.camera_y_m)
+        && Number.isFinite(point.camera_z_m));
+      const fallback = body.length ? body : data.keypoints.filter(active);
+      return {
+        camera_x_m:median(fallback.map(point => point.camera_x_m)),
+        camera_y_m:median(fallback.map(point => point.camera_y_m)),
+        camera_z_m:median(fallback.map(point => point.camera_z_m)),
+      };
+    }
+    function framingRadius(points, center) {
       const radius = Math.max(...points.map(point => Math.hypot(
         point.camera_x_m - center.camera_x_m,
         point.camera_y_m - center.camera_y_m,
         point.camera_z_m - center.camera_z_m,
       )), .05);
-      return {center, radius};
+      return radius;
     }
     function depthColor(z, maxDepth) {
       const amount = Math.min(Math.abs(z) / Math.max(maxDepth, 0.001), 1);
@@ -233,17 +258,18 @@
       if (!activePoints.length) {
         ctx.fillStyle = '#96a5bd'; ctx.fillText('No points above this confidence threshold', 20, 30); return;
       }
-      const frame = framing(activePoints);
+      const center = rotationCenter();
+      const frameRadius = framingRadius(activePoints, center);
       const transformed = data.keypoints.map(point => rotate({
-        camera_x_m:point.camera_x_m - frame.center.camera_x_m,
-        camera_y_m:point.camera_y_m - frame.center.camera_y_m,
-        camera_z_m:point.camera_z_m - frame.center.camera_z_m,
+        camera_x_m:point.camera_x_m - center.camera_x_m,
+        camera_y_m:point.camera_y_m - center.camera_y_m,
+        camera_z_m:point.camera_z_m - center.camera_z_m,
       }));
       const visible = data.keypoints.map((point, index) => ({point, index, r:transformed[index]})).filter(item => active(item.point));
       const available = Math.max(1, Math.min(width - 70, height - 70));
       // A 3D bounding radius is invariant under rotation.  Using it instead
       // of the projected X/Y bounds prevents dragging from auto-zooming.
-      const scale = available / (frame.radius * 2) * .88 * zoom;
+      const scale = available / (frameRadius * 2) * .88 * zoom;
       const project = point => ({x:width/2 + point.x*scale, y:height/2 - point.y*scale});
       canvas.dataset.renderScale = String(scale);
       const maxDepth = Math.max(...visible.map(item => Math.abs(item.point.z_relative_m)), .001);
