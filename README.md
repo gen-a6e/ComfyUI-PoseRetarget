@@ -41,7 +41,7 @@ git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
 
 | パラメータ | 既定 | 説明 |
 |---|---|---|
-| `size_reference` | torso | 画面内の人物サイズを合わせるための3D基準。torso / shoulder_width / body_height |
+| `size_reference` | torso | 画面内の人物サイズを合わせるための3D基準。torso / shoulder_width / body_height / head_to_heel |
 | `reference_symmetry` | average | averageは左右の推定誤差を平均化。offは左右それぞれの3D骨長をそのまま使用 |
 | `uniform_scale` | 1.0 | 腰中央を基準にした全身サイズ |
 | `leg_scale` | 1.0 | 脚と足の追加倍率 |
@@ -75,6 +75,8 @@ driving画像 ──────────────────────
 referenceの各骨長は`size_reference`で正規化した比率としてdrivingへ転送します。
 肩幅、腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。
 `report`にはreferenceと生成後の主要な正規化比率を`reference->generated`形式で表示します。
+
+`head_to_heel`は、MHRの全308キーポイントから選んだ頭頂点に、頭・胴体・左右平均の脚・かかとの3D骨格長を加えた、姿勢に影響されにくい全身長を基準にします。この選択肢を使う場合は、全キーポイント出力に対応した`ComfyUI-SAM3DBody`でreferenceとdrivingを再実行してください。
 
 MHR70には鼻・目・耳はありますが、輪郭や口を含む密な顔ランドマークはありません。
 そのためBODY18の顔点は出力し、`face_keypoints_2d`の70点はゼロconfidenceにします。

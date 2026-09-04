@@ -71,6 +71,14 @@ def sam_output(points=None):
     }
 
 
+def full_keypoints(points=None, head_top=(0.0, -1.02, 0.0), head_top_index=184):
+    body = skeleton() if points is None else points
+    full = np.repeat(body[sr.NOSE][None, :], sr.MHR_KEYPOINT_COUNT, axis=0)
+    full[:sr.MHR70_COUNT] = body
+    full[head_top_index] = head_top
+    return full
+
+
 class SAM3DRetargetTests(unittest.TestCase):
     def test_reference_bone_length_and_driving_3d_direction_are_combined(self):
         reference = skeleton()
@@ -136,6 +144,60 @@ class SAM3DRetargetTests(unittest.TestCase):
                     details["driving_unit"],
                     places=7,
                 )
+
+    def test_full_mhr_head_top_is_selected_along_head_axis(self):
+        body = skeleton()
+        full = full_keypoints(body)
+        # A point far to the side must not win over the anatomical crown.
+        full[200] = (3.0, -0.80, 0.0)
+        output = sam_output(body)
+        output["keypoints_3d_full"] = full
+
+        head_top, index = sr.extract_head_top(output, body)
+
+        self.assertEqual(index, 184)
+        np.testing.assert_allclose(head_top, (0.0, -1.02, 0.0))
+
+    def test_head_to_heel_uses_crown_and_both_heel_segments(self):
+        body = skeleton()
+        head_top = np.array((0.0, -1.02, 0.0))
+        expected = (
+            sr.body_unit(body, "body_height")
+            + np.linalg.norm(head_top - body[sr.NOSE])
+            + 0.5 * (
+                np.linalg.norm(body[sr.LEFT_HEEL] - body[sr.LEFT_ANKLE])
+                + np.linalg.norm(body[sr.RIGHT_HEEL] - body[sr.RIGHT_ANKLE])
+            )
+        )
+
+        self.assertAlmostEqual(
+            sr.body_unit(body, "head_to_heel", head_top), expected, places=7
+        )
+
+    def test_head_to_heel_normalizes_reference_to_driving_full_height(self):
+        reference = skeleton()
+        driving = skeleton() * 1.85
+        reference_head_top = np.array((0.0, -1.02, 0.0))
+        driving_head_top = reference_head_top * 1.85
+
+        _, details = sr.retarget_mhr70(
+            reference,
+            driving,
+            size_reference="head_to_heel",
+            reference_symmetry="off",
+            reference_head_top=reference_head_top,
+            driving_head_top=driving_head_top,
+        )
+
+        self.assertAlmostEqual(details["base_scale"], 1.85, places=7)
+        self.assertAlmostEqual(
+            details["driving_unit"], details["reference_unit"] * 1.85,
+            places=7,
+        )
+
+    def test_head_to_heel_requires_updated_full_mhr_output(self):
+        with self.assertRaisesRegex(ValueError, "requires full MHR keypoints"):
+            sr.extract_head_top(sam_output())
 
     def test_detailed_scales_control_each_reported_proportion(self):
         reference = skeleton()
@@ -269,6 +331,24 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertIn("Ratios reference->generated", report)
         self.assertIn("shoulder_to_nose:", report)
 
+    def test_node_uses_full_mhr_head_top_for_head_to_heel(self):
+        node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
+        node = node_class()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        reference = sam_output()
+        driving = sam_output()
+        reference["keypoints_3d_full"] = full_keypoints()
+        driving["keypoints_3d_full"] = full_keypoints()
+
+        _, report = node.run(
+            reference, driving, image,
+            "head_to_heel", "off",
+            1.0, 1.0, 1.0, 1.0, 1.0,
+            "off", 16)
+
+        self.assertIn("normalized by head_to_heel", report)
+        self.assertIn("reference=184, driving=184", report)
+
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
         package = load_package()
         self.assertEqual(
@@ -280,6 +360,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(inputs["driving_sam3d"], ("SAM3D_OUTPUT",))
         self.assertEqual(inputs["driving_image"], ("IMAGE",))
         self.assertEqual(inputs["reference_symmetry"], (["average", "off"],))
+        self.assertIn("head_to_heel", inputs["size_reference"][0])
         for name in (
                 "torso_scale", "shoulder_width_scale", "hip_width_scale",
                 "neck_scale", "upper_arm_scale", "forearm_scale",

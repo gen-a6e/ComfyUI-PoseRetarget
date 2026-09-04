@@ -1,5 +1,6 @@
 from .sam3d_retarget import (
     extract_camera,
+    extract_head_top,
     extract_mhr70,
     fit_projected,
     image_size,
@@ -19,7 +20,9 @@ class SAM3DBodyPoseRetarget:
                 "reference_sam3d": ("SAM3D_OUTPUT",),
                 "driving_sam3d": ("SAM3D_OUTPUT",),
                 "driving_image": ("IMAGE",),
-                "size_reference": (["torso", "shoulder_width", "body_height"],),
+                "size_reference": ([
+                    "torso", "shoulder_width", "body_height", "head_to_heel"
+                ],),
                 "reference_symmetry": (["average", "off"],),
                 "uniform_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
                                             "max": 3.0, "step": 0.01}),
@@ -71,6 +74,17 @@ class SAM3DBodyPoseRetarget:
             thigh_scale=1.0, shin_scale=1.0):
         reference = extract_mhr70(reference_sam3d)
         driving = extract_mhr70(driving_sam3d)
+        reference_head_top = None
+        driving_head_top = None
+        reference_head_top_index = None
+        driving_head_top_index = None
+        if size_reference == "head_to_heel":
+            reference_head_top, reference_head_top_index = extract_head_top(
+                reference_sam3d, reference
+            )
+            driving_head_top, driving_head_top_index = extract_head_top(
+                driving_sam3d, driving
+            )
         retargeted, details = retarget_mhr70(
             reference,
             driving,
@@ -89,6 +103,8 @@ class SAM3DBodyPoseRetarget:
             forearm_scale=forearm_scale,
             thigh_scale=thigh_scale,
             shin_scale=shin_scale,
+            reference_head_top=reference_head_top,
+            driving_head_top=driving_head_top,
         )
 
         width, height = image_size(driving_image)
@@ -119,6 +135,12 @@ class SAM3DBodyPoseRetarget:
             f" Ratios reference->generated "
             f"(normalized by {details['size_reference']}): {ratio_note}."
         )
+        if size_reference == "head_to_heel":
+            report += (
+                " Head-top full-MHR indices "
+                f"reference={reference_head_top_index}, "
+                f"driving={driving_head_top_index}."
+            )
         invalid_count = int((~valid).sum())
         if invalid_count:
             report += f" WARNING: {invalid_count} point(s) were behind the camera."

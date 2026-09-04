@@ -12,6 +12,7 @@ import numpy as np
 
 EPS = 1e-8
 MHR70_COUNT = 70
+MHR_KEYPOINT_COUNT = 308
 
 # MHR70 indices used by SAM 3D Body.
 NOSE = 0
@@ -22,6 +23,7 @@ LEFT_ELBOW, RIGHT_ELBOW = 7, 8
 LEFT_HIP, RIGHT_HIP = 9, 10
 LEFT_KNEE, RIGHT_KNEE = 11, 12
 LEFT_ANKLE, RIGHT_ANKLE = 13, 14
+LEFT_HEEL, RIGHT_HEEL = 17, 20
 RIGHT_WRIST, LEFT_WRIST = 41, 62
 NECK = 69
 
@@ -182,6 +184,63 @@ def extract_mhr70(output):
     return points
 
 
+def extract_head_top(output, mhr70=None):
+    """Return the uppermost dense MHR head keypoint and its full-set index."""
+    if not isinstance(output, dict):
+        raise ValueError("SAM3D input must be a SAM3D_OUTPUT dictionary")
+    value = output.get("keypoints_3d_full")
+    if value is None:
+        raw = output.get("raw_output") or {}
+        value = raw.get("pred_keypoints_3d_full")
+    if value is None:
+        raise ValueError(
+            "head_to_heel requires full MHR keypoints from the updated "
+            "ComfyUI-SAM3DBody; rerun SAM 3D Body: Process Image"
+        )
+
+    points = as_numpy(value, "full MHR keypoints")
+    while points.ndim > 2 and points.shape[0] == 1:
+        points = points[0]
+    if (
+        points.ndim != 2
+        or points.shape[0] < MHR_KEYPOINT_COUNT
+        or points.shape[1] < 3
+    ):
+        raise ValueError(
+            "SAM3D full MHR keypoints must have shape (308, 3); "
+            f"received {points.shape}"
+        )
+    points = points[:MHR_KEYPOINT_COUNT, :3]
+
+    body = extract_mhr70(output) if mhr70 is None else np.asarray(
+        mhr70, dtype=np.float64
+    )
+    if body.shape != (MHR70_COUNT, 3):
+        raise ValueError("mhr70 must have shape (70, 3)")
+
+    # Points 70..307 are dense head/face landmarks. Select the landmark
+    # furthest along the neck-to-head axis, so raised hands can never be
+    # mistaken for the crown and a tilted head remains supported.
+    head_center = np.mean(
+        body[[NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR]], axis=0
+    )
+    head_axis = head_center - body[NECK]
+    axis_length = np.linalg.norm(head_axis)
+    if not np.isfinite(axis_length) or axis_length <= EPS:
+        raise ValueError("SAM3D skeleton has no usable neck-to-head direction")
+    head_axis /= axis_length
+
+    dense = points[MHR70_COUNT:]
+    valid = np.all(np.isfinite(dense), axis=1)
+    dense = dense[valid]
+    dense_indices = np.arange(MHR70_COUNT, MHR_KEYPOINT_COUNT)[valid]
+    if not dense.size or np.max(np.ptp(dense, axis=0)) <= EPS:
+        raise ValueError("SAM3D full MHR head keypoints are empty")
+
+    selected = int(np.argmax((dense - body[NECK]) @ head_axis))
+    return dense[selected].copy(), int(dense_indices[selected])
+
+
 def hip_center(points):
     return (points[LEFT_HIP] + points[RIGHT_HIP]) * 0.5
 
@@ -195,7 +254,7 @@ def _edge_delta(points, child, parent):
     return points[child] - origin
 
 
-def body_unit(points, mode="torso"):
+def body_unit(points, mode="torso", head_top=None):
     """Return a pose-resistant 3D size unit for proportion transfer."""
     torso = np.linalg.norm(points[NECK] - hip_center(points))
     shoulder = np.linalg.norm(points[LEFT_SHOULDER] - points[RIGHT_SHOULDER])
@@ -209,10 +268,27 @@ def body_unit(points, mode="torso"):
             np.linalg.norm(points[LEFT_ANKLE] - points[LEFT_KNEE])
             + np.linalg.norm(points[RIGHT_ANKLE] - points[RIGHT_KNEE]))
     )
+    head_to_heel = None
+    if head_top is not None:
+        head_top = np.asarray(head_top, dtype=np.float64).reshape(-1)
+        if head_top.size < 3 or not np.all(np.isfinite(head_top[:3])):
+            raise ValueError("head_top must contain three finite coordinates")
+        head_to_heel = (
+            body_height
+            + np.linalg.norm(head_top[:3] - points[NOSE])
+            + 0.5 * (
+                np.linalg.norm(points[LEFT_HEEL] - points[LEFT_ANKLE])
+                + np.linalg.norm(points[RIGHT_HEEL] - points[RIGHT_ANKLE])
+            )
+        )
+    elif mode == "head_to_heel":
+        raise ValueError("head_to_heel requires a full-MHR head-top keypoint")
+
     candidates = {
         "torso": (torso, shoulder, body_height),
         "shoulder_width": (shoulder, torso, body_height),
         "body_height": (body_height, torso, shoulder),
+        "head_to_heel": (head_to_heel, body_height, torso, shoulder),
     }.get(mode, (torso, shoulder, body_height))
     for value in candidates:
         if np.isfinite(value) and value > EPS:
@@ -305,15 +381,16 @@ def retarget_mhr70(reference, driving, size_reference="torso",
                    shoulder_width_scale=1.0, hip_width_scale=1.0,
                    neck_scale=1.0, upper_arm_scale=1.0,
                    forearm_scale=1.0, thigh_scale=1.0,
-                   shin_scale=1.0):
+                   shin_scale=1.0, reference_head_top=None,
+                   driving_head_top=None):
     """Combine reference 3D bone lengths with driving 3D directions."""
     reference = np.asarray(reference, dtype=np.float64)
     driving = np.asarray(driving, dtype=np.float64)
     if reference.shape != (MHR70_COUNT, 3) or driving.shape != (MHR70_COUNT, 3):
         raise ValueError("reference and driving joints must both have shape (70, 3)")
 
-    ref_unit = body_unit(reference, size_reference)
-    drv_unit = body_unit(driving, size_reference)
+    ref_unit = body_unit(reference, size_reference, reference_head_top)
+    drv_unit = body_unit(driving, size_reference, driving_head_top)
     base_scale = drv_unit / ref_unit * float(uniform_scale)
     target_unit = drv_unit * float(uniform_scale)
     length_ratios = {
