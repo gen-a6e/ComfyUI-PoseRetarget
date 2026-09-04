@@ -352,26 +352,26 @@ def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16)
     return points, scale
 
 
-def _openpose_field(projected, valid, indices, width, height):
+def _openpose_field(projected, valid, indices):
     out = np.zeros((len(indices), 3), dtype=np.float64)
     for output_index, mhr_index in enumerate(indices):
         if valid[mhr_index]:
-            out[output_index, 0] = projected[mhr_index, 0] / max(width, EPS)
-            out[output_index, 1] = projected[mhr_index, 1] / max(height, EPS)
+            out[output_index, 0] = projected[mhr_index, 0]
+            out[output_index, 1] = projected[mhr_index, 1]
             out[output_index, 2] = 1.0
     return [round(float(value), 6) for value in out.reshape(-1)]
 
 
 def to_pose_keypoint(projected, valid, width, height):
-    """Convert MHR70 body/hands to normalized DWPose/OpenPose fields."""
+    """Convert MHR70 body/hands to absolute-pixel OpenPose fields."""
     person = {
         "pose_keypoints_2d": _openpose_field(
-            projected, valid, COCO18_FROM_MHR70, width, height),
+            projected, valid, COCO18_FROM_MHR70),
         "face_keypoints_2d": [0.0] * (70 * 3),
         "hand_left_keypoints_2d": _openpose_field(
-            projected, valid, LEFT_HAND_FROM_MHR70, width, height),
+            projected, valid, LEFT_HAND_FROM_MHR70),
         "hand_right_keypoints_2d": _openpose_field(
-            projected, valid, RIGHT_HAND_FROM_MHR70, width, height),
+            projected, valid, RIGHT_HAND_FROM_MHR70),
     }
     return [{
         "canvas_width": int(width),

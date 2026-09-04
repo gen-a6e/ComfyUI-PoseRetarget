@@ -109,7 +109,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertAlmostEqual(depth[0], 5.0)
         np.testing.assert_allclose(projected[0], (220.0, 380.0))
 
-    def test_openpose_mapping_uses_normalized_body_and_hand_coordinates(self):
+    def test_openpose_mapping_uses_absolute_pixel_coordinates(self):
         projected = np.array([(i * 2.0, i * 3.0) for i in range(70)])
         valid = np.ones(70, dtype=bool)
 
@@ -118,10 +118,10 @@ class SAM3DRetargetTests(unittest.TestCase):
         body = np.asarray(person["pose_keypoints_2d"]).reshape(18, 3)
         left_hand = np.asarray(person["hand_left_keypoints_2d"]).reshape(21, 3)
 
-        np.testing.assert_allclose(body[2], (6 * 2 / 200, 6 * 3 / 300, 1.0))
+        np.testing.assert_allclose(body[2], (6 * 2, 6 * 3, 1.0))
         np.testing.assert_allclose(
-            left_hand[0], (sr.LEFT_WRIST * 2 / 200,
-                           sr.LEFT_WRIST * 3 / 300, 1.0))
+            left_hand[0], (sr.LEFT_WRIST * 2,
+                           sr.LEFT_WRIST * 3, 1.0))
         self.assertEqual(len(person["face_keypoints_2d"]), 210)
         self.assertFalse(any(person["face_keypoints_2d"]))
 
@@ -155,7 +155,10 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertIn("SAM 3D Body retargeted", report)
 
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
-        inputs = load_package().NODE_CLASS_MAPPINGS[
+        package = load_package()
+        self.assertEqual(
+            set(package.NODE_CLASS_MAPPINGS), {"SAM3DBodyPoseRetarget"})
+        inputs = package.NODE_CLASS_MAPPINGS[
             "SAM3DBodyPoseRetarget"].INPUT_TYPES()["required"]
 
         self.assertEqual(inputs["reference_sam3d"], ("SAM3D_OUTPUT",))
