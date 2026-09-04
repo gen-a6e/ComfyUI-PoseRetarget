@@ -130,6 +130,13 @@ class RTMW3DInspectorTests(unittest.TestCase):
         self.assertIn("averagePoint([averagePoint(hips), averagePoint(shoulders)])", viewer)
         self.assertNotIn("camera_x_m:(Math.min(...xs)", viewer)
 
+    def test_pointer_drag_changes_yaw_only(self):
+        viewer = (Path(__file__).resolve().parents[1]
+                  / "tools" / "rtmw3d_viewer.html").read_text(
+                      encoding="utf-8")
+        self.assertIn("yaw += (event.clientX-lastX)*.01", viewer)
+        self.assertNotIn("pitch +=", viewer)
+
 
 if __name__ == "__main__":
     unittest.main()

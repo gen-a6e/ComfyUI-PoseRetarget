@@ -97,7 +97,7 @@
           <span><i class="dot" style="background:var(--near)"></i>Nearer (-Z)</span>
           <span><i class="dot" style="background:var(--neutral)"></i>Hip plane</span>
           <span><i class="dot" style="background:var(--far)"></i>Farther (+Z)</span>
-          <span>Drag: rotate · Wheel: zoom · Click table row: highlight</span>
+          <span>Drag left/right: rotate · Wheel: zoom · Click table row: highlight</span>
         </div>
       </div>
       <div style="display:grid; gap:14px; align-content:start">
@@ -153,7 +153,7 @@
     const thresholdValue = document.getElementById('threshold-value');
     const enabledGroups = new Set(['body', 'face', 'left_hand', 'right_hand']);
     const groupColors = {body:'#a7f3d0', face:'#d7deea', left_hand:'#fde68a', right_hand:'#c4b5fd'};
-    let yaw = 0, pitch = 0, zoom = 1, dragging = false, lastX = 0, lastY = 0;
+    let yaw = 0, pitch = 0, zoom = 1, dragging = false, lastX = 0;
     let selectedIndex = null;
 
     threshold.value = data.confidence_threshold;
@@ -329,8 +329,8 @@
       pitch = view === 'top' ? Math.PI/2 : 0;
       draw();
     }));
-    canvas.addEventListener('pointerdown', event => { dragging=true; lastX=event.clientX; lastY=event.clientY; canvas.setPointerCapture(event.pointerId); });
-    canvas.addEventListener('pointermove', event => { if (!dragging) return; yaw += (event.clientX-lastX)*.01; pitch += (event.clientY-lastY)*.01; lastX=event.clientX; lastY=event.clientY; draw(); });
+    canvas.addEventListener('pointerdown', event => { dragging=true; lastX=event.clientX; canvas.setPointerCapture(event.pointerId); });
+    canvas.addEventListener('pointermove', event => { if (!dragging) return; yaw += (event.clientX-lastX)*.01; lastX=event.clientX; draw(); });
     canvas.addEventListener('pointerup', () => { dragging=false; });
     canvas.addEventListener('wheel', event => { event.preventDefault(); zoom = Math.max(.3, Math.min(4, zoom * Math.exp(-event.deltaY*.001))); draw(); }, {passive:false});
     window.addEventListener('resize', resizeCanvas);
