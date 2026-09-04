@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RTMW3D Inspector</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a2d;
+      --line: #263653;
+      --muted: #96a5bd;
+      --text: #edf3ff;
+      --accent: #67e8f9;
+      --near: #ff5252;
+      --neutral: #ffe066;
+      --far: #40a9ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #17233e 0, var(--bg) 42rem);
+      color: var(--text);
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    header, main { width: min(1500px, calc(100% - 28px)); margin: 0 auto; }
+    header { padding: 24px 0 14px; }
+    h1 { margin: 0 0 5px; font-size: clamp(22px, 3vw, 34px); }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    p { margin: 5px 0; }
+    .muted { color: var(--muted); }
+    .layout { display: grid; grid-template-columns: minmax(460px, 1.3fr) minmax(360px, 1fr); gap: 14px; }
+    .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: 0 12px 36px #0005; }
+    .viewer-panel { min-height: 650px; display: flex; flex-direction: column; }
+    #viewer { width: 100%; flex: 1; min-height: 500px; border-radius: 10px; background: #080d18; cursor: grab; touch-action: none; }
+    #viewer:active { cursor: grabbing; }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
+    button, input[type="search"] { border: 1px solid var(--line); background: #19243a; color: var(--text); border-radius: 8px; padding: 7px 10px; }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    input[type="range"] { width: 130px; }
+    label { white-space: nowrap; }
+    .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+    .summary-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .stat { background: #0c1424; border-radius: 9px; padding: 10px; }
+    .stat strong { display: block; font-size: 20px; color: var(--accent); }
+    .rank { margin: 0; padding-left: 20px; font-family: ui-monospace, monospace; }
+    .warning { border-left: 3px solid var(--neutral); padding-left: 9px; color: #ffe9a6; }
+    .files { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .files a { color: var(--accent); text-decoration: none; border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+    .overlay { width: 100%; max-height: 440px; object-fit: contain; background: #080d18; border-radius: 10px; }
+    .table-panel { margin: 14px 0 28px; }
+    .table-tools { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    .table-wrap { max-height: 620px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
+    table { width: 100%; border-collapse: collapse; font: 12px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    th, td { padding: 7px 9px; text-align: right; border-bottom: 1px solid #202d45; white-space: nowrap; }
+    th { position: sticky; top: 0; background: #172238; color: #cce6ff; z-index: 1; }
+    th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: left; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover, tbody tr.selected { background: #253651; }
+    tbody tr.low { opacity: .42; }
+    .nearer { color: var(--near); }
+    .farther { color: var(--far); }
+    .root_plane { color: var(--neutral); }
+    @media (max-width: 940px) {
+      .layout { grid-template-columns: 1fr; }
+      .viewer-panel { min-height: 570px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RTMW3D Inspector</h1>
+    <p id="subtitle" class="muted"></p>
+  </header>
+  <main>
+    <section class="layout">
+      <div class="panel viewer-panel">
+        <h2>Interactive 3D skeleton</h2>
+        <div class="controls">
+          <button data-view="front">Front</button>
+          <button data-view="side">Side</button>
+          <button data-view="top">Top</button>
+          <button id="reset">Reset</button>
+          <label>Confidence <input id="threshold" type="range" min="0" max="1" step="0.01"><span id="threshold-value"></span></label>
+        </div>
+        <div class="controls" id="groups">
+          <label><input type="checkbox" value="body" checked> Body</label>
+          <label><input type="checkbox" value="face" checked> Face</label>
+          <label><input type="checkbox" value="left_hand" checked> Left hand</label>
+          <label><input type="checkbox" value="right_hand" checked> Right hand</label>
+        </div>
+        <canvas id="viewer"></canvas>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--near)"></i>Nearer (-Z)</span>
+          <span><i class="dot" style="background:var(--neutral)"></i>Hip plane</span>
+          <span><i class="dot" style="background:var(--far)"></i>Farther (+Z)</span>
+          <span>Drag: rotate · Wheel: zoom · Click table row: highlight</span>
+        </div>
+      </div>
+      <div style="display:grid; gap:14px; align-content:start">
+        <div class="panel">
+          <h2>Summary</h2>
+          <div class="summary-grid">
+            <div class="stat"><strong id="visible-count"></strong>visible keypoints</div>
+            <div class="stat"><strong id="people-count"></strong>detected people</div>
+          </div>
+          <h3>Nearest visible points</h3>
+          <ol id="nearest" class="rank"></ol>
+          <h3>Farthest visible points</h3>
+          <ol id="farthest" class="rank"></ol>
+          <div id="warnings"></div>
+          <div class="files">
+            <a href="overlay.png">Overlay PNG</a>
+            <a href="keypoints.json">JSON</a>
+            <a href="keypoints.csv">CSV</a>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>2D overlay</h2>
+          <img class="overlay" src="overlay.png" alt="RTMW3D keypoint overlay">
+        </div>
+      </div>
+    </section>
+
+    <section class="panel table-panel">
+      <h2>All 133 keypoints</h2>
+      <div class="table-tools">
+        <input id="search" type="search" placeholder="Search index or name">
+        <label><input id="show-low" type="checkbox" checked> Show low-confidence</label>
+        <span class="muted">Camera XYZ is approximate; Z ordering comes directly from RTMW3D.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>Name</th><th>Group</th><th>X px</th><th>Y px</th>
+            <th>Z rel m</th><th>Cam X m</th><th>Cam Y m</th><th>Score</th><th>Depth</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script id="rtmw3d-data" type="application/json">__RTMW3D_DATA__</script>
+  <script>
+    const data = JSON.parse(document.getElementById('rtmw3d-data').textContent);
+    const canvas = document.getElementById('viewer');
+    const ctx = canvas.getContext('2d');
+    const threshold = document.getElementById('threshold');
+    const thresholdValue = document.getElementById('threshold-value');
+    const enabledGroups = new Set(['body', 'face', 'left_hand', 'right_hand']);
+    const groupColors = {body:'#a7f3d0', face:'#d7deea', left_hand:'#fde68a', right_hand:'#c4b5fd'};
+    let yaw = 0, pitch = 0, zoom = 1, dragging = false, lastX = 0, lastY = 0;
+    let selectedIndex = null;
+
+    threshold.value = data.confidence_threshold;
+    const fmt = (value, digits=3) => Number(value).toFixed(digits);
+    const esc = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    document.getElementById('subtitle').textContent = `${data.image.path} · ${data.image.width}×${data.image.height} · person ${data.person_index + 1}/${data.person_count}`;
+    document.getElementById('visible-count').textContent = `${data.summary.visible_count}/133`;
+    document.getElementById('people-count').textContent = data.person_count;
+    for (const id of ['nearest', 'farthest']) {
+      document.getElementById(id).innerHTML = data.summary[id].map(point =>
+        `<li>#${point.index} ${esc(point.name)}: ${fmt(point.z_relative_m)} m</li>`).join('');
+    }
+    document.getElementById('warnings').innerHTML = data.warnings.map(item => `<p class="warning">${esc(item)}</p>`).join('');
+
+    function activeThreshold() { return Number(threshold.value); }
+    function active(point) { return enabledGroups.has(point.group) && point.score >= activeThreshold(); }
+    function rotate(point) {
+      const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+      const x1 = point.camera_x_m * cy + point.camera_z_m * sy;
+      const z1 = -point.camera_x_m * sy + point.camera_z_m * cy;
+      const y1 = point.camera_y_m * cp - z1 * sp;
+      const z2 = point.camera_y_m * sp + z1 * cp;
+      return {x:x1, y:y1, z:z2};
+    }
+    function depthColor(z, maxDepth) {
+      const amount = Math.min(Math.abs(z) / Math.max(maxDepth, 0.001), 1);
+      const neutral = [255, 224, 102];
+      const target = z < 0 ? [255, 82, 82] : [64, 169, 255];
+      const mixed = neutral.map((value, i) => Math.round(value * (1 - amount) + target[i] * amount));
+      return `rgb(${mixed.join(',')})`;
+    }
+    function resizeCanvas() {
+      const ratio = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.round(rect.width * ratio));
+      canvas.height = Math.max(1, Math.round(rect.height * ratio));
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      draw();
+    }
+    function drawAxes(width, height) {
+      const origin = {x:56, y:height - 54};
+      const vectors = [
+        [{camera_x_m:1,camera_y_m:0,camera_z_m:0}, '#ff6b6b', '+X'],
+        [{camera_x_m:0,camera_y_m:1,camera_z_m:0}, '#69db7c', '+Y'],
+        [{camera_x_m:0,camera_y_m:0,camera_z_m:1}, '#4dabf7', '+Z away'],
+      ];
+      ctx.lineWidth = 2;
+      for (const [vector, color, label] of vectors) {
+        const end = rotate(vector);
+        const length = 38;
+        ctx.strokeStyle = color; ctx.fillStyle = color;
+        ctx.beginPath(); ctx.moveTo(origin.x, origin.y);
+        ctx.lineTo(origin.x + end.x * length, origin.y - end.y * length); ctx.stroke();
+        ctx.fillText(label, origin.x + end.x * length + 4, origin.y - end.y * length);
+      }
+    }
+    function draw() {
+      const rect = canvas.getBoundingClientRect(), width = rect.width, height = rect.height;
+      ctx.clearRect(0, 0, width, height);
+      const transformed = data.keypoints.map(rotate);
+      const visible = data.keypoints.map((point, index) => ({point, index, r:transformed[index]})).filter(item => active(item.point));
+      if (!visible.length) {
+        ctx.fillStyle = '#96a5bd'; ctx.fillText('No points above this confidence threshold', 20, 30); return;
+      }
+      const xs = visible.map(item => item.r.x), ys = visible.map(item => item.r.y);
+      const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+      const spanX = Math.max(maxX - minX, .05), spanY = Math.max(maxY - minY, .05);
+      const scale = Math.min((width - 70) / spanX, (height - 70) / spanY) * .88 * zoom;
+      const centerX = (minX + maxX) / 2, centerY = (minY + maxY) / 2;
+      const project = point => ({x:width/2 + (point.x-centerX)*scale, y:height/2 - (point.y-centerY)*scale});
+      const maxDepth = Math.max(...visible.map(item => Math.abs(item.point.z_relative_m)), .001);
+
+      ctx.lineCap = 'round'; ctx.lineWidth = 1.6;
+      for (const edge of data.edges) {
+        const a = data.keypoints[edge.a], b = data.keypoints[edge.b];
+        if (!active(a) || !active(b)) continue;
+        const pa = project(transformed[edge.a]), pb = project(transformed[edge.b]);
+        ctx.strokeStyle = groupColors[edge.group] + 'aa';
+        ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
+      }
+      visible.sort((a,b) => b.r.z - a.r.z);
+      for (const item of visible) {
+        const screen = project(item.r);
+        const selected = item.index === selectedIndex;
+        ctx.fillStyle = depthColor(item.point.z_relative_m, maxDepth);
+        ctx.strokeStyle = selected ? '#fff' : '#06101d';
+        ctx.lineWidth = selected ? 3 : 1;
+        ctx.beginPath(); ctx.arc(screen.x, screen.y, selected ? 7 : (item.point.group === 'body' ? 4.5 : 2.5), 0, Math.PI*2); ctx.fill(); ctx.stroke();
+        if (selected) {
+          ctx.fillStyle = '#fff'; ctx.font = '12px ui-monospace, monospace';
+          ctx.fillText(`#${item.index} ${item.point.name} z=${fmt(item.point.z_relative_m)}m`, screen.x + 10, screen.y - 10);
+        }
+      }
+      ctx.font = '11px ui-monospace, monospace';
+      drawAxes(width, height);
+    }
+
+    function renderRows() {
+      const query = document.getElementById('search').value.trim().toLowerCase();
+      const showLow = document.getElementById('show-low').checked;
+      const rows = data.keypoints.filter(point => {
+        const matches = !query || point.name.toLowerCase().includes(query) || String(point.index) === query;
+        return matches && (showLow || point.score >= activeThreshold());
+      }).map(point => `<tr data-index="${point.index}" class="${point.score < activeThreshold() ? 'low ' : ''}${point.index === selectedIndex ? 'selected' : ''}">
+        <td>${point.index}</td><td>${esc(point.name)}</td><td>${esc(point.group)}</td>
+        <td>${fmt(point.x_px,1)}</td><td>${fmt(point.y_px,1)}</td><td class="${point.depth}">${fmt(point.z_relative_m)}</td>
+        <td>${fmt(point.camera_x_m)}</td><td>${fmt(point.camera_y_m)}</td><td>${fmt(point.score)}</td><td class="${point.depth}">${point.depth}</td>
+      </tr>`).join('');
+      document.getElementById('rows').innerHTML = rows;
+      document.querySelectorAll('#rows tr').forEach(row => row.addEventListener('click', () => {
+        selectedIndex = Number(row.dataset.index); renderRows(); draw();
+      }));
+    }
+
+    threshold.addEventListener('input', () => { thresholdValue.textContent = Number(threshold.value).toFixed(2); renderRows(); draw(); });
+    document.getElementById('groups').addEventListener('change', event => {
+      if (event.target.checked) enabledGroups.add(event.target.value); else enabledGroups.delete(event.target.value); draw();
+    });
+    document.getElementById('search').addEventListener('input', renderRows);
+    document.getElementById('show-low').addEventListener('change', renderRows);
+    document.getElementById('reset').addEventListener('click', () => { yaw=0; pitch=0; zoom=1; selectedIndex=null; renderRows(); draw(); });
+    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
+      const view = button.dataset.view;
+      yaw = view === 'side' ? Math.PI/2 : 0;
+      pitch = view === 'top' ? Math.PI/2 : 0;
+      draw();
+    }));
+    canvas.addEventListener('pointerdown', event => { dragging=true; lastX=event.clientX; lastY=event.clientY; canvas.setPointerCapture(event.pointerId); });
+    canvas.addEventListener('pointermove', event => { if (!dragging) return; yaw += (event.clientX-lastX)*.01; pitch += (event.clientY-lastY)*.01; lastX=event.clientX; lastY=event.clientY; draw(); });
+    canvas.addEventListener('pointerup', () => { dragging=false; });
+    canvas.addEventListener('wheel', event => { event.preventDefault(); zoom = Math.max(.3, Math.min(4, zoom * Math.exp(-event.deltaY*.001))); draw(); }, {passive:false});
+    window.addEventListener('resize', resizeCanvas);
+    thresholdValue.textContent = Number(threshold.value).toFixed(2);
+    renderRows();
+    resizeCanvas();
+  </script>
+</body>
+</html>

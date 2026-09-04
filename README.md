@@ -19,6 +19,77 @@ ComfyUI を再起動してください。
 フォルダ名は何でも構いません。ブラウザ側の JS を使っていないので、
 Manager がフォルダ名を変えても壊れません。
 
+## RTMW3D Inspector（任意）
+
+画像1枚からRTMW3D-Xの全133点を推定し、奥行きが正しく取れているかを
+確認するための独立した検証ツールです。Pose Retargetノードの動作や依存関係には
+影響しません。Python 3.10以上が必要です。
+
+ComfyUI環境を汚さないよう、専用の仮想環境での実行を推奨します。
+
+```bash
+python -m venv .venv-rtmw3d
+```
+
+Windows:
+
+```powershell
+.venv-rtmw3d\Scripts\activate
+python -m pip install -r requirements-inspector.txt
+```
+
+macOS / Linux:
+
+```bash
+source .venv-rtmw3d/bin/activate
+python -m pip install -r requirements-inspector.txt
+```
+
+`requirements-inspector.txt`はCPU版ONNX Runtimeを導入します。NVIDIA GPUを使う場合は、
+必ず上記の専用仮想環境内でCPU版をGPU版へ入れ替えてください。
+
+```bash
+python -m pip uninstall -y onnxruntime
+python -m pip install onnxruntime-gpu
+```
+
+実行例:
+
+```bash
+python tools/rtmw3d_inspector.py input.png --device auto --open
+```
+
+初回だけRTMW3D-X（約369MB）と人物検出モデルをダウンロードして、
+rtmlibの標準キャッシュへ保存します。イラストで人物検出に問題がある場合は、
+人物検出を省略して画像全体を使えます。
+
+```bash
+python tools/rtmw3d_inspector.py input.png \
+  --device cuda --bbox-mode full-image --open
+```
+
+既定の出力先は`rtmw3d_reports/<画像名>/`です。
+
+- `overlay.png`: 元画像へ2D骨格を重ねた確認画像
+- `keypoints.json`: 全情報と座標系の説明
+- `keypoints.csv`: 全133点の座標・相対Z・信頼度
+- `viewer.html`: 外部ライブラリ不要の回転・ズーム可能な3Dビューア
+
+ビューアでは身体・顔・左右の手を個別に表示でき、表の関節をクリックすると
+3D骨格上の点が強調されます。Zは腰中央を0とする相対奥行きで、負値がカメラ側、
+正値が奥側です。X/Yのメートル座標はカメラ情報がない画像から既定の焦点距離で
+復元した近似値なので、精度判定ではZの順序と関節間の差を優先してください。
+
+主なオプション:
+
+- `--device auto|cpu|cuda|cuda:N|mps|rocm`
+- `--bbox-mode auto|full-image`
+- `--person-index N`: 複数人のうち出力する人物
+- `--confidence 0.3`: 表示・集計に使う信頼度の下限
+- `--cache-dir PATH`: モデルキャッシュの保存先
+- `--model PATH_OR_URL`: RTMW3D ONNXモデルを明示
+- `--detector PATH_OR_URL`: 人物検出モデルを明示
+
 ## ノード
 
 ### Pose Retarget (keep body proportions)
