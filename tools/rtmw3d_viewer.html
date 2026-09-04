@@ -33,12 +33,12 @@
     .layout { display: grid; grid-template-columns: minmax(460px, 1.3fr) minmax(360px, 1fr); gap: 14px; }
     .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: 0 12px 36px #0005; }
     .viewer-panel { min-height: 650px; display: flex; flex-direction: column; }
-    #viewer { display: block; width: 100%; height: 500px; flex: 1 1 500px; min-height: 500px; border-radius: 10px; background: #080d18; cursor: grab; touch-action: none; }
-    #viewer:active { cursor: grabbing; }
+    #viewer { display: block; width: 100%; height: 500px; flex: 1 1 500px; min-height: 500px; border-radius: 10px; background: #080d18; }
     .controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
     button, input[type="search"] { border: 1px solid var(--line); background: #19243a; color: var(--text); border-radius: 8px; padding: 7px 10px; }
     button { cursor: pointer; }
     button:hover { border-color: var(--accent); }
+    button.active { border-color: var(--accent); background: #21405a; color: #d9fbff; }
     input[type="range"] { width: 130px; }
     label { white-space: nowrap; }
     .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); }
@@ -78,7 +78,7 @@
   <main>
     <section class="layout">
       <div class="panel viewer-panel">
-        <h2>Interactive 3D skeleton</h2>
+        <h2>3D depth projections</h2>
         <div class="controls">
           <button data-view="front">Front</button>
           <button data-view="side">Side</button>
@@ -97,7 +97,7 @@
           <span><i class="dot" style="background:var(--near)"></i>Nearer (-Z)</span>
           <span><i class="dot" style="background:var(--neutral)"></i>Hip plane</span>
           <span><i class="dot" style="background:var(--far)"></i>Farther (+Z)</span>
-          <span>Drag left/right: rotate · Wheel: zoom · Click table row: highlight</span>
+          <span>Fixed original-camera axes · Wheel: zoom · Click table row: highlight</span>
         </div>
       </div>
       <div style="display:grid; gap:14px; align-content:start">
@@ -153,8 +153,7 @@
     const thresholdValue = document.getElementById('threshold-value');
     const enabledGroups = new Set(['body', 'face', 'left_hand', 'right_hand']);
     const groupColors = {body:'#a7f3d0', face:'#d7deea', left_hand:'#fde68a', right_hand:'#c4b5fd'};
-    let yaw = 0, pitch = 0, zoom = 1, dragging = false, lastX = 0;
-    let activePointerId = null;
+    let viewMode = 'front', zoom = 1;
     let selectedIndex = null;
 
     threshold.value = data.confidence_threshold;
@@ -171,13 +170,13 @@
 
     function activeThreshold() { return Number(threshold.value); }
     function active(point) { return enabledGroups.has(point.group) && point.score >= activeThreshold(); }
-    function rotate(point) {
-      const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
-      const x1 = point.camera_x_m * cy + point.camera_z_m * sy;
-      const z1 = -point.camera_x_m * sy + point.camera_z_m * cy;
-      const y1 = point.camera_y_m * cp - z1 * sp;
-      const z2 = point.camera_y_m * sp + z1 * cp;
-      return {x:x1, y:y1, z:z2};
+    function fixedProjection(point, center) {
+      const x = point.camera_x_m - center.camera_x_m;
+      const y = point.camera_y_m - center.camera_y_m;
+      const z = point.z_relative_m - center.camera_z_m;
+      if (viewMode === 'side') return {x:z, y};
+      if (viewMode === 'top') return {x, y:z};
+      return {x, y};
     }
     function averagePoint(points) {
       return {
@@ -238,22 +237,27 @@
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       draw();
     }
-    function drawAxes(width, height) {
-      const origin = {x:56, y:height - 54};
-      const vectors = [
-        [{camera_x_m:1,camera_y_m:0,camera_z_m:0}, '#ff6b6b', '+X'],
-        [{camera_x_m:0,camera_y_m:1,camera_z_m:0}, '#69db7c', '+Y'],
-        [{camera_x_m:0,camera_y_m:0,camera_z_m:1}, '#4dabf7', '+Z away'],
-      ];
-      ctx.lineWidth = 2;
-      for (const [vector, color, label] of vectors) {
-        const end = rotate(vector);
-        const length = 38;
-        ctx.strokeStyle = color; ctx.fillStyle = color;
-        ctx.beginPath(); ctx.moveTo(origin.x, origin.y);
-        ctx.lineTo(origin.x + end.x * length, origin.y - end.y * length); ctx.stroke();
-        ctx.fillText(label, origin.x + end.x * length + 4, origin.y - end.y * length);
+    function drawViewGuide(width, height, scale, center) {
+      ctx.font = 'bold 12px ui-monospace, monospace';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeStyle = '#ffe06688';
+      if (viewMode === 'side') {
+        const rootX = width/2 - center.camera_z_m * scale;
+        ctx.beginPath(); ctx.moveTo(rootX, 38); ctx.lineTo(rootX, height - 28); ctx.stroke();
+        ctx.fillStyle = '#ff8b8b'; ctx.textAlign = 'left'; ctx.fillText('← NEARER  −Z', 16, 24);
+        ctx.fillStyle = '#78c4ff'; ctx.textAlign = 'right'; ctx.fillText('FARTHER  +Z →', width - 16, 24);
+      } else if (viewMode === 'top') {
+        const rootY = height/2 + center.camera_z_m * scale;
+        ctx.beginPath(); ctx.moveTo(28, rootY); ctx.lineTo(width - 28, rootY); ctx.stroke();
+        ctx.fillStyle = '#78c4ff'; ctx.textAlign = 'center'; ctx.fillText('↑ FARTHER  +Z', width/2, 24);
+        ctx.fillStyle = '#ff8b8b'; ctx.fillText('↓ NEARER  −Z', width/2, height - 14);
+      } else {
+        ctx.fillStyle = '#cbd5e1'; ctx.textAlign = 'left';
+        ctx.fillText('FRONT: color shows original camera Z', 16, 24);
       }
+      ctx.setLineDash([]);
+      ctx.textAlign = 'left';
     }
     function draw() {
       const rect = canvas.getBoundingClientRect(), width = rect.width, height = rect.height;
@@ -264,15 +268,10 @@
       }
       const center = rotationCenter();
       const frameRadius = framingRadius(activePoints, center);
-      const transformed = data.keypoints.map(point => rotate({
-        camera_x_m:point.camera_x_m - center.camera_x_m,
-        camera_y_m:point.camera_y_m - center.camera_y_m,
-        camera_z_m:point.camera_z_m - center.camera_z_m,
-      }));
-      const visible = data.keypoints.map((point, index) => ({point, index, r:transformed[index]})).filter(item => active(item.point));
+      const projected = data.keypoints.map(point => fixedProjection(point, center));
+      const visible = data.keypoints.map((point, index) => ({point, index, r:projected[index]})).filter(item => active(item.point));
       const available = Math.max(1, Math.min(width - 70, height - 70));
-      // A 3D bounding radius is invariant under rotation.  Using it instead
-      // of the projected X/Y bounds prevents dragging from auto-zooming.
+      // One 3D radius keeps scale consistent between all fixed projections.
       const scale = available / (frameRadius * 2) * .88 * zoom;
       const project = point => ({x:width/2 + point.x*scale, y:height/2 - point.y*scale});
       canvas.dataset.renderScale = String(scale);
@@ -282,7 +281,7 @@
       for (const edge of data.edges) {
         const a = data.keypoints[edge.a], b = data.keypoints[edge.b];
         if (!active(a) || !active(b)) continue;
-        const pa = project(transformed[edge.a]), pb = project(transformed[edge.b]);
+        const pa = project(projected[edge.a]), pb = project(projected[edge.b]);
         ctx.strokeStyle = groupColors[edge.group] + 'aa';
         ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
       }
@@ -301,8 +300,7 @@
           ctx.fillText(`#${item.index} ${item.point.name} z=${fmt(item.point.z_relative_m)}m`, screen.x + 10, screen.y - 10);
         }
       }
-      ctx.font = '11px ui-monospace, monospace';
-      drawAxes(width, height);
+      drawViewGuide(width, height, scale, center);
     }
 
     function renderRows() {
@@ -328,32 +326,22 @@
     });
     document.getElementById('search').addEventListener('input', renderRows);
     document.getElementById('show-low').addEventListener('change', renderRows);
-    document.getElementById('reset').addEventListener('click', () => { yaw=0; pitch=0; zoom=1; selectedIndex=null; renderRows(); draw(); });
-    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
-      const view = button.dataset.view;
-      yaw = view === 'side' ? Math.PI/2 : 0;
-      pitch = view === 'top' ? Math.PI/2 : 0;
+    function setView(nextView) {
+      viewMode = nextView;
+      document.querySelectorAll('[data-view]').forEach(button =>
+        button.classList.toggle('active', button.dataset.view === viewMode));
       draw();
+    }
+    document.getElementById('reset').addEventListener('click', () => { zoom=1; selectedIndex=null; renderRows(); setView('front'); });
+    document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
+      setView(button.dataset.view);
     }));
-    function stopDragging() { dragging=false; activePointerId=null; }
-    canvas.addEventListener('pointerdown', event => {
-      if (!event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
-      dragging=true; activePointerId=event.pointerId; lastX=event.clientX;
-      canvas.setPointerCapture(event.pointerId);
-    });
-    canvas.addEventListener('pointermove', event => {
-      if (!dragging || event.pointerId !== activePointerId) return;
-      if (event.pointerType === 'mouse' && !(event.buttons & 1)) { stopDragging(); return; }
-      yaw += (event.clientX-lastX)*.01; lastX=event.clientX; draw();
-    });
-    canvas.addEventListener('pointerup', stopDragging);
-    canvas.addEventListener('pointercancel', stopDragging);
-    canvas.addEventListener('lostpointercapture', stopDragging);
     canvas.addEventListener('wheel', event => { event.preventDefault(); zoom = Math.max(.3, Math.min(4, zoom * Math.exp(-event.deltaY*.001))); draw(); }, {passive:false});
     window.addEventListener('resize', resizeCanvas);
     window.addEventListener('load', resizeCanvas);
     if ('ResizeObserver' in window) new ResizeObserver(resizeCanvas).observe(canvas);
     thresholdValue.textContent = Number(threshold.value).toFixed(2);
+    setView('front');
     renderRows();
     resizeCanvas();
     requestAnimationFrame(resizeCanvas);

@@ -116,12 +116,14 @@ class RTMW3DInspectorTests(unittest.TestCase):
             Path("reports"), Path("my pose (front).png"))
         self.assertEqual(output, Path("reports/my_pose__front_"))
 
-    def test_viewer_scale_is_independent_of_projected_rotation(self):
+    def test_viewer_uses_fixed_original_camera_projections(self):
         viewer = (Path(__file__).resolve().parents[1]
                   / "tools" / "rtmw3d_viewer.html").read_text(
                       encoding="utf-8")
         self.assertIn("available / (frameRadius * 2)", viewer)
-        self.assertNotIn("(width - 70) / spanX", viewer)
+        self.assertIn("if (viewMode === 'side') return {x:z, y}", viewer)
+        self.assertIn("if (viewMode === 'top') return {x, y:z}", viewer)
+        self.assertNotIn("function rotate", viewer)
 
     def test_viewer_rotates_around_torso_instead_of_visible_bounds(self):
         viewer = (Path(__file__).resolve().parents[1]
@@ -130,20 +132,12 @@ class RTMW3DInspectorTests(unittest.TestCase):
         self.assertIn("averagePoint([averagePoint(hips), averagePoint(shoulders)])", viewer)
         self.assertNotIn("camera_x_m:(Math.min(...xs)", viewer)
 
-    def test_pointer_drag_changes_yaw_only(self):
-        viewer = (Path(__file__).resolve().parents[1]
-                  / "tools" / "rtmw3d_viewer.html").read_text(
-                      encoding="utf-8")
-        self.assertIn("yaw += (event.clientX-lastX)*.01", viewer)
-        self.assertNotIn("pitch +=", viewer)
-
-    def test_viewer_keeps_original_depth_order_and_recovers_pointer(self):
+    def test_viewer_keeps_original_depth_order_without_drag_rotation(self):
         viewer = (Path(__file__).resolve().parents[1]
                   / "tools" / "rtmw3d_viewer.html").read_text(
                       encoding="utf-8")
         self.assertIn("b.point.z_relative_m - a.point.z_relative_m", viewer)
-        self.assertIn("'pointercancel', stopDragging", viewer)
-        self.assertIn("'lostpointercapture', stopDragging", viewer)
+        self.assertNotIn("'pointermove'", viewer)
 
     def test_viewer_tracks_post_layout_canvas_size(self):
         viewer = (Path(__file__).resolve().parents[1]
