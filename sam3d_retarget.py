@@ -227,7 +227,7 @@ def reference_lengths(points, symmetry="average"):
     }
     if symmetry == "off":
         return lengths
-    if symmetry not in {"average", "longer_side"}:
+    if symmetry != "average":
         raise ValueError(f"unknown reference symmetry mode: {symmetry}")
 
     visited = set()
@@ -237,7 +237,7 @@ def reference_lengths(points, symmetry="average"):
             continue
         visited.add(pair)
         left, right = lengths[child], lengths[mirror]
-        value = max(left, right) if symmetry == "longer_side" else (left + right) * 0.5
+        value = (left + right) * 0.5
         lengths[child] = value
         lengths[mirror] = value
     return lengths

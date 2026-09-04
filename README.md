@@ -42,7 +42,7 @@ git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
 | パラメータ | 既定 | 説明 |
 |---|---|---|
 | `size_reference` | torso | 画面内の人物サイズを合わせるための3D基準。torso / shoulder_width / body_height |
-| `reference_symmetry` | average | referenceの左右で推定誤差が出たときの骨長補正 |
+| `reference_symmetry` | average | averageは左右の推定誤差を平均化。offは左右それぞれの3D骨長をそのまま使用 |
 | `uniform_scale` | 1.0 | 腰中央を基準にした全身サイズ |
 | `leg_scale` | 1.0 | 脚と足の追加倍率 |
 | `arm_scale` | 1.0 | 腕と手の追加倍率 |

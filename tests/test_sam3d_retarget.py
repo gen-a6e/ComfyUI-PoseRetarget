@@ -206,6 +206,10 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertAlmostEqual(lengths[sr.LEFT_ELBOW], 0.40, places=7)
         self.assertAlmostEqual(lengths[sr.RIGHT_ELBOW], 0.40, places=7)
 
+    def test_longer_side_symmetry_mode_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unknown reference symmetry"):
+            sr.reference_lengths(skeleton(), "longer_side")
+
     def test_perspective_projection_matches_sam3d_camera_convention(self):
         points = np.zeros((70, 3), dtype=np.float64)
         points[0] = (1.0, 2.0, 0.0)
@@ -275,6 +279,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(inputs["reference_sam3d"], ("SAM3D_OUTPUT",))
         self.assertEqual(inputs["driving_sam3d"], ("SAM3D_OUTPUT",))
         self.assertEqual(inputs["driving_image"], ("IMAGE",))
+        self.assertEqual(inputs["reference_symmetry"], (["average", "off"],))
         for name in (
                 "torso_scale", "shoulder_width_scale", "hip_width_scale",
                 "neck_scale", "upper_arm_scale", "forearm_scale",

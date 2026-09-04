@@ -20,7 +20,7 @@ class SAM3DBodyPoseRetarget:
                 "driving_sam3d": ("SAM3D_OUTPUT",),
                 "driving_image": ("IMAGE",),
                 "size_reference": (["torso", "shoulder_width", "body_height"],),
-                "reference_symmetry": (["average", "longer_side", "off"],),
+                "reference_symmetry": (["average", "off"],),
                 "uniform_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
                                             "max": 3.0, "step": 0.01}),
                 "leg_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
