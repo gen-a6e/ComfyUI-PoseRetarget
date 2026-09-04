@@ -19,7 +19,6 @@ class SAM3DBodyPoseRetarget:
                 "reference_sam3d": ("SAM3D_OUTPUT",),
                 "driving_sam3d": ("SAM3D_OUTPUT",),
                 "reference_image": ("IMAGE",),
-                "size_reference": (["torso", "shoulder_width", "body_height"],),
                 "reference_symmetry": (["average", "off"],),
                 "uniform_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
                                             "max": 3.0, "step": 0.01}),
@@ -63,7 +62,7 @@ class SAM3DBodyPoseRetarget:
     CATEGORY = "pose-retarget"
 
     def run(self, reference_sam3d, driving_sam3d, reference_image,
-            size_reference, reference_symmetry,
+            reference_symmetry,
             uniform_scale, leg_scale, arm_scale, head_scale, hand_scale,
             fit_to_canvas, canvas_margin, torso_scale=1.0,
             shoulder_width_scale=1.0, hip_width_scale=1.0,
@@ -74,7 +73,6 @@ class SAM3DBodyPoseRetarget:
         retargeted, details = retarget_mhr70(
             reference,
             driving,
-            size_reference=size_reference,
             reference_symmetry=reference_symmetry,
             uniform_scale=uniform_scale,
             leg_scale=leg_scale,
@@ -104,22 +102,19 @@ class SAM3DBodyPoseRetarget:
         depth_note = "unavailable"
         if valid_depth.size:
             depth_note = f"{valid_depth.min():.3f}..{valid_depth.max():.3f} m"
-        ratio_note = ", ".join(
-            f"{name}:{details['reference_proportions'][name]:.3f}"
-            f"->{details['generated_proportions'][name]:.3f}"
-            for name in details["reference_proportions"]
+        length_note = ", ".join(
+            f"{name}:{details['reference_measurements'][name]:.3f}"
+            f"->{details['generated_measurements'][name]:.3f}"
+            for name in details["reference_measurements"]
         )
         report = (
             "SAM 3D Body retargeted one MHR70 skeleton; "
-            f"reference_unit={details['reference_unit']:.3f} m; "
-            f"driving_unit={details['driving_unit']:.3f} m; "
-            f"scale={details['base_scale']:.3f}; "
+            f"uniform_scale={details['uniform_scale']:.3f}; "
             f"fit_scale={fit_scale:.3f}; "
             f"camera_depth={depth_note}; "
             "size_source=reference; camera_source=reference; "
             "canvas_source=reference."
-            f" Ratios reference->generated "
-            f"(normalized by {details['size_reference']}): {ratio_note}."
+            f" Lengths reference->generated (model space): {length_note}."
         )
         invalid_count = int((~valid).sum())
         if invalid_count:

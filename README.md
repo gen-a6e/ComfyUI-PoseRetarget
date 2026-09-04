@@ -42,7 +42,6 @@ git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
 
 | パラメータ | 既定 | 説明 |
 |---|---|---|
-| `size_reference` | torso | referenceの全身サイズを測る3D基準。torso / shoulder_width / body_height |
 | `reference_symmetry` | average | averageは左右の推定誤差を平均化。offは左右それぞれの3D骨長をそのまま使用 |
 | `uniform_scale` | 1.0 | 腰中央を基準にした全身サイズ |
 | `leg_scale` | 1.0 | 脚と足の追加倍率 |
@@ -73,9 +72,9 @@ reference画像 ─────────────────────�
 出力する`POSE_KEYPOINT`は、ComfyUI標準の`SDPose Draw Keypoints`に合わせた
 絶対ピクセル座標です。
 
-referenceの各骨長は`size_reference`で正規化した比率としてdrivingへ転送します。
+referenceの各3D骨長を、drivingの各ボーン方向へ直接転送します。
 肩幅、腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。
-`report`にはreferenceと生成後の主要な正規化比率を`reference->generated`形式で表示します。
+`report`にはreferenceと生成後の主要な実骨長を`reference->generated`形式で表示します。
 出力の全身サイズ、腰位置、カメラ、焦点距離、キャンバスもreference基準です。
 drivingからは各ボーンの3D方向だけを使います。
 
