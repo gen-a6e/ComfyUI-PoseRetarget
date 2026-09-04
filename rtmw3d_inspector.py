@@ -22,11 +22,15 @@ RTMW3D_MODEL_URL = (
     "rtmw3d-x_8xb64_cocktail14-384x288-b0a0eab7_20240626.onnx"
 )
 
-# Defaults used by the official MMPose RTMPose3D estimator when an image has
-# no camera calibration.  X/Y reconstructed with these values are approximate;
-# relative Z is the direct and most useful model output for pose retargeting.
-DEFAULT_FOCAL = (1145.04940459, 1143.78109572)
-DEFAULT_ROOT_DEPTH_M = 5.14388
+# RTMW3D encodes X/Y on its 288x384 model-input plane and Z on a separate
+# 288-bin SimCC depth axis.  The decoded Z range is ±2.1744869 metres around
+# the root.  Keeping these native coordinates avoids pretending that an
+# uncalibrated source image has known camera intrinsics.
+MODEL_INPUT_WIDTH = 288.0
+MODEL_INPUT_HEIGHT = 384.0
+MODEL_DEPTH_SIZE = 288.0
+MODEL_Z_RANGE_M = 2.1744869
+MODEL_DEPTH_PIXELS_PER_M = MODEL_DEPTH_SIZE / (2.0 * MODEL_Z_RANGE_M)
 HIP_INDICES = (11, 12)
 KEYPOINT_COUNT = 133
 
@@ -307,45 +311,15 @@ def center_relative_depth(
     return z - root, root, method
 
 
-def reconstruct_camera_space(
-        points_2d: np.ndarray,
-        relative_z: np.ndarray,
-        scores: np.ndarray,
-        image_width: int,
-        image_height: int,
-        confidence_threshold: float,
-        focal: Tuple[float, float] = DEFAULT_FOCAL,
-        root_depth_m: float = DEFAULT_ROOT_DEPTH_M,
-) -> Tuple[np.ndarray, str]:
-    """Approximate root-centered camera XYZ using MMPose defaults.
+def relative_depth_to_model_pixels(relative_z: np.ndarray) -> np.ndarray:
+    """Convert decoded root-relative Z metres back to RTMW3D depth pixels.
 
-    Camera +Z points away from the camera.  Viewer +Y points upward, unlike
-    image pixel Y.  This is an approximate visualization because a single
-    image normally has no calibrated focal length or root distance.
+    This is the inverse of MMPose's ``SimCC3DLabel.decode`` mapping after the
+    root depth has been subtracted.  The returned values are offsets from the
+    hip plane; add ``MODEL_DEPTH_SIZE / 2`` to recover absolute SimCC bins.
     """
-    xy = np.asarray(points_2d, dtype=np.float32)
     z = np.asarray(relative_z, dtype=np.float32)
-    depth = np.maximum(root_depth_m + z, 0.01)
-    fx, fy = focal
-    cx, cy = image_width / 2.0, image_height / 2.0
-    camera = np.empty((len(xy), 3), dtype=np.float32)
-    camera[:, 0] = (xy[:, 0] - cx) / fx * depth
-    camera[:, 1] = -(xy[:, 1] - cy) / fy * depth
-    camera[:, 2] = z
-
-    usable_hips = [index for index in HIP_INDICES
-                   if scores[index] >= confidence_threshold
-                   and np.all(np.isfinite(camera[index]))]
-    if usable_hips:
-        center = np.mean(camera[usable_hips], axis=0)
-        method = "hip_midpoint"
-    else:
-        visible = ((scores[:23] >= confidence_threshold)
-                   & np.all(np.isfinite(camera[:23]), axis=1))
-        center = (np.median(camera[:23][visible], axis=0)
-                  if np.any(visible) else np.zeros(3, dtype=np.float32))
-        method = "visible_body_median"
-    return camera - center, method
+    return z * MODEL_DEPTH_PIXELS_PER_M
 
 
 def depth_label(z_value: float, neutral_band: float = 0.02) -> str:
@@ -378,9 +352,8 @@ def build_payload(
     relative_z, raw_root_z, z_center_method = center_relative_depth(
         points_3d[person_index, :, 2], selected_scores,
         confidence_threshold)
-    camera, camera_center_method = reconstruct_camera_space(
-        selected_2d, relative_z, selected_scores,
-        image_width, image_height, confidence_threshold)
+    selected_model = points_3d[person_index]
+    model_depth = relative_depth_to_model_pixels(relative_z)
 
     records: List[Dict[str, Any]] = []
     for index, name in enumerate(KEYPOINT_NAMES):
@@ -391,10 +364,10 @@ def build_payload(
             "group": keypoint_group(index),
             "x_px": float(selected_2d[index, 0]),
             "y_px": float(selected_2d[index, 1]),
+            "model_x_px": float(selected_model[index, 0]),
+            "model_y_px": float(selected_model[index, 1]),
             "z_relative_m": float(relative_z[index]),
-            "camera_x_m": float(camera[index, 0]),
-            "camera_y_m": float(camera[index, 1]),
-            "camera_z_m": float(camera[index, 2]),
+            "z_model_px": float(model_depth[index]),
             "score": score,
             "visible": bool(score >= confidence_threshold),
             "depth": depth_label(float(relative_z[index])),
@@ -406,7 +379,8 @@ def build_payload(
                       reverse=True)[:5]
     warnings = [
         "Z is relative depth: negative is nearer to the camera; positive is farther.",
-        "Camera X/Y use MMPose's default focal length and root distance because the image has no calibration.",
+        "Model X/Y and Z px are RTMW3D input-grid coordinates, not calibrated camera-space metres.",
+        "Changing the viewer depth scale only magnifies the display; exported Z values do not change.",
     ]
     if z_center_method != "hip_midpoint":
         warnings.append(
@@ -414,7 +388,7 @@ def build_payload(
             f"{z_center_method.replace('_', ' ')}.")
 
     return {
-        "schema": "rtmw3d-inspector-v1",
+        "schema": "rtmw3d-inspector-v2",
         "image": {
             "path": str(image_path),
             "width": int(image_width),
@@ -426,17 +400,18 @@ def build_payload(
         "coordinate_system": {
             "x_px": "image pixels, positive right",
             "y_px": "image pixels, positive down",
+            "model_x_px": "RTMW3D 288px input-grid X, positive right",
+            "model_y_px": "RTMW3D 384px input-grid Y, positive down",
             "z_relative_m": "hip-centered relative depth; negative nearer, positive farther",
-            "camera_x_m": "approximate hip-centered camera X, positive right",
-            "camera_y_m": "approximate hip-centered camera Y, positive up",
-            "camera_z_m": "hip-centered relative camera depth, positive away",
-            "focal_px": list(DEFAULT_FOCAL),
-            "assumed_root_depth_m": DEFAULT_ROOT_DEPTH_M,
+            "z_model_px": "hip-centered RTMW3D depth-grid pixels; negative nearer, positive farther",
+            "model_input_size": [MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT],
+            "model_depth_size": MODEL_DEPTH_SIZE,
+            "model_z_range_m": MODEL_Z_RANGE_M,
+            "model_depth_pixels_per_m": MODEL_DEPTH_PIXELS_PER_M,
         },
         "centering": {
             "raw_model_root_z": raw_root_z,
             "z_method": z_center_method,
-            "camera_method": camera_center_method,
         },
         "inference": inference_metadata or {},
         "summary": {
@@ -444,12 +419,14 @@ def build_payload(
             "low_confidence_count": KEYPOINT_COUNT - len(visible),
             "nearest": [
                 {"index": point["index"], "name": point["name"],
-                 "z_relative_m": point["z_relative_m"]}
+                 "z_relative_m": point["z_relative_m"],
+                 "z_model_px": point["z_model_px"]}
                 for point in nearest
             ],
             "farthest": [
                 {"index": point["index"], "name": point["name"],
-                 "z_relative_m": point["z_relative_m"]}
+                 "z_relative_m": point["z_relative_m"],
+                 "z_model_px": point["z_model_px"]}
                 for point in farthest
             ],
         },
@@ -559,8 +536,8 @@ def write_artifacts(
         encoding="utf-8")
 
     fieldnames = [
-        "index", "name", "group", "x_px", "y_px", "z_relative_m",
-        "camera_x_m", "camera_y_m", "camera_z_m", "score", "visible",
+        "index", "name", "group", "x_px", "y_px", "model_x_px",
+        "model_y_px", "z_relative_m", "z_model_px", "score", "visible",
         "depth",
     ]
     with csv_path.open("w", encoding="utf-8", newline="") as handle:

@@ -76,20 +76,15 @@ class RTMW3DInspectorTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["farthest"][0]["index"], 10)
         self.assertEqual(len(payload["keypoints"]), 133)
 
-    def test_camera_space_is_root_centered_and_y_points_up(self):
-        points = np.full((133, 2), (200.0, 250.0), dtype=np.float32)
-        points[0] = (300.0, 150.0)
-        z = np.zeros(133, dtype=np.float32)
-        scores = np.ones(133, dtype=np.float32)
+    def test_relative_depth_converts_to_native_model_pixels(self):
+        z = np.array([
+            -inspector.MODEL_Z_RANGE_M, 0.0, inspector.MODEL_Z_RANGE_M,
+        ], dtype=np.float32)
+        pixels = inspector.relative_depth_to_model_pixels(z)
 
-        camera, method = inspector.reconstruct_camera_space(
-            points, z, scores, 400, 500, 0.3)
-
-        self.assertEqual(method, "hip_midpoint")
         np.testing.assert_allclose(
-            np.mean(camera[[11, 12]], axis=0), np.zeros(3), atol=1e-7)
-        self.assertGreater(camera[0, 0], 0.0)
-        self.assertGreater(camera[0, 1], 0.0)
+            pixels, [-inspector.MODEL_DEPTH_SIZE / 2, 0.0,
+                     inspector.MODEL_DEPTH_SIZE / 2], atol=1e-5)
 
     def test_inference_shapes_are_validated(self):
         keypoints, scores, keypoints_2d = synthetic_outputs()
@@ -116,11 +111,14 @@ class RTMW3DInspectorTests(unittest.TestCase):
             Path("reports"), Path("my pose (front).png"))
         self.assertEqual(output, Path("reports/my_pose__front_"))
 
-    def test_viewer_uses_fixed_original_camera_projections(self):
+    def test_viewer_uses_fixed_native_model_grid_projections(self):
         viewer = (Path(__file__).resolve().parents[1]
                   / "tools" / "rtmw3d_viewer.html").read_text(
                       encoding="utf-8")
         self.assertIn("available / (frameRadius * 2)", viewer)
+        self.assertIn("point.model_x_px - center.model_x_px", viewer)
+        self.assertIn("center.model_y_px - point.model_y_px", viewer)
+        self.assertIn("point.z_model_px - center.z_model_px", viewer)
         self.assertIn("if (viewMode === 'side') return {x:z, y}", viewer)
         self.assertIn("if (viewMode === 'top') return {x, y:z}", viewer)
         self.assertNotIn("function rotate", viewer)
@@ -130,7 +128,7 @@ class RTMW3DInspectorTests(unittest.TestCase):
                   / "tools" / "rtmw3d_viewer.html").read_text(
                       encoding="utf-8")
         self.assertIn("averagePoint([averagePoint(hips), averagePoint(shoulders)])", viewer)
-        self.assertNotIn("camera_x_m:(Math.min(...xs)", viewer)
+        self.assertNotIn("camera_x_m", viewer)
 
     def test_viewer_keeps_original_depth_order_without_drag_rotation(self):
         viewer = (Path(__file__).resolve().parents[1]
@@ -138,6 +136,24 @@ class RTMW3DInspectorTests(unittest.TestCase):
                       encoding="utf-8")
         self.assertIn("b.point.z_relative_m - a.point.z_relative_m", viewer)
         self.assertNotIn("'pointermove'", viewer)
+
+    def test_payload_exports_native_model_grid_without_fake_camera_xyz(self):
+        keypoints, scores, keypoints_2d = synthetic_outputs()
+        keypoints[0, :, 0] = 123.0
+        keypoints[0, :, 1] = 234.0
+        keypoints[0, 9, 2] = 1.0
+        payload = inspector.build_payload(
+            Path("pose.png"), 400, 500,
+            keypoints, scores, keypoints_2d)
+
+        point = payload["keypoints"][9]
+        self.assertEqual(payload["schema"], "rtmw3d-inspector-v2")
+        self.assertEqual(point["model_x_px"], 123.0)
+        self.assertEqual(point["model_y_px"], 234.0)
+        self.assertAlmostEqual(
+            point["z_model_px"], inspector.MODEL_DEPTH_PIXELS_PER_M,
+            places=5)
+        self.assertNotIn("camera_x_m", point)
 
     def test_viewer_tracks_post_layout_canvas_size(self):
         viewer = (Path(__file__).resolve().parents[1]

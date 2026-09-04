@@ -85,6 +85,7 @@
           <button data-view="top">Top</button>
           <button id="reset">Reset</button>
           <label>Confidence <input id="threshold" type="range" min="0" max="1" step="0.01"><span id="threshold-value"></span></label>
+          <label>Depth scale <input id="depth-scale" type="range" min="0.25" max="4" step="0.05" value="1"><span id="depth-scale-value"></span></label>
         </div>
         <div class="controls" id="groups">
           <label><input type="checkbox" value="body" checked> Body</label>
@@ -97,7 +98,7 @@
           <span><i class="dot" style="background:var(--near)"></i>Nearer (-Z)</span>
           <span><i class="dot" style="background:var(--neutral)"></i>Hip plane</span>
           <span><i class="dot" style="background:var(--far)"></i>Farther (+Z)</span>
-          <span>Fixed original-camera axes · Wheel: zoom · Click table row: highlight</span>
+          <span>RTMW3D model grid · Wheel: zoom · Depth scale only magnifies the view</span>
         </div>
       </div>
       <div style="display:grid; gap:14px; align-content:start">
@@ -130,13 +131,13 @@
       <div class="table-tools">
         <input id="search" type="search" placeholder="Search index or name">
         <label><input id="show-low" type="checkbox" checked> Show low-confidence</label>
-        <span class="muted">Camera XYZ is approximate; Z ordering comes directly from RTMW3D.</span>
+        <span class="muted">Model X/Y/Z px are RTMW3D input-grid coordinates. Z rel m is the decoded model value.</span>
       </div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>#</th><th>Name</th><th>Group</th><th>X px</th><th>Y px</th>
-            <th>Z rel m</th><th>Cam X m</th><th>Cam Y m</th><th>Score</th><th>Depth</th>
+            <th>#</th><th>Name</th><th>Group</th><th>Image X px</th><th>Image Y px</th>
+            <th>Model X px</th><th>Model Y px</th><th>Z rel m</th><th>Z model px</th><th>Score</th><th>Depth</th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -151,6 +152,8 @@
     const ctx = canvas.getContext('2d');
     const threshold = document.getElementById('threshold');
     const thresholdValue = document.getElementById('threshold-value');
+    const depthScale = document.getElementById('depth-scale');
+    const depthScaleValue = document.getElementById('depth-scale-value');
     const enabledGroups = new Set(['body', 'face', 'left_hand', 'right_hand']);
     const groupColors = {body:'#a7f3d0', face:'#d7deea', left_hand:'#fde68a', right_hand:'#c4b5fd'};
     let viewMode = 'front', zoom = 1;
@@ -164,25 +167,25 @@
     document.getElementById('people-count').textContent = data.person_count;
     for (const id of ['nearest', 'farthest']) {
       document.getElementById(id).innerHTML = data.summary[id].map(point =>
-        `<li>#${point.index} ${esc(point.name)}: ${fmt(point.z_relative_m)} m</li>`).join('');
+        `<li>#${point.index} ${esc(point.name)}: ${fmt(point.z_relative_m)} m / ${fmt(point.z_model_px,1)} px</li>`).join('');
     }
     document.getElementById('warnings').innerHTML = data.warnings.map(item => `<p class="warning">${esc(item)}</p>`).join('');
 
     function activeThreshold() { return Number(threshold.value); }
     function active(point) { return enabledGroups.has(point.group) && point.score >= activeThreshold(); }
     function fixedProjection(point, center) {
-      const x = point.camera_x_m - center.camera_x_m;
-      const y = point.camera_y_m - center.camera_y_m;
-      const z = point.z_relative_m - center.camera_z_m;
+      const x = point.model_x_px - center.model_x_px;
+      const y = center.model_y_px - point.model_y_px;
+      const z = (point.z_model_px - center.z_model_px) * Number(depthScale.value);
       if (viewMode === 'side') return {x:z, y};
       if (viewMode === 'top') return {x, y:z};
       return {x, y};
     }
     function averagePoint(points) {
       return {
-        camera_x_m:points.reduce((sum, point) => sum + point.camera_x_m, 0) / points.length,
-        camera_y_m:points.reduce((sum, point) => sum + point.camera_y_m, 0) / points.length,
-        camera_z_m:points.reduce((sum, point) => sum + point.camera_z_m, 0) / points.length,
+        model_x_px:points.reduce((sum, point) => sum + point.model_x_px, 0) / points.length,
+        model_y_px:points.reduce((sum, point) => sum + point.model_y_px, 0) / points.length,
+        z_model_px:points.reduce((sum, point) => sum + point.z_model_px, 0) / points.length,
       };
     }
     function median(values) {
@@ -201,22 +204,22 @@
 
       const body = data.keypoints.slice(0, 23).filter(point =>
         point.score >= activeThreshold()
-        && Number.isFinite(point.camera_x_m)
-        && Number.isFinite(point.camera_y_m)
-        && Number.isFinite(point.camera_z_m));
+        && Number.isFinite(point.model_x_px)
+        && Number.isFinite(point.model_y_px)
+        && Number.isFinite(point.z_model_px));
       const fallback = body.length ? body : data.keypoints.filter(active);
       return {
-        camera_x_m:median(fallback.map(point => point.camera_x_m)),
-        camera_y_m:median(fallback.map(point => point.camera_y_m)),
-        camera_z_m:median(fallback.map(point => point.camera_z_m)),
+        model_x_px:median(fallback.map(point => point.model_x_px)),
+        model_y_px:median(fallback.map(point => point.model_y_px)),
+        z_model_px:median(fallback.map(point => point.z_model_px)),
       };
     }
     function framingRadius(points, center) {
       const radius = Math.max(...points.map(point => Math.hypot(
-        point.camera_x_m - center.camera_x_m,
-        point.camera_y_m - center.camera_y_m,
-        point.camera_z_m - center.camera_z_m,
-      )), .05);
+        point.model_x_px - center.model_x_px,
+        point.model_y_px - center.model_y_px,
+        (point.z_model_px - center.z_model_px) * Number(depthScale.value),
+      )), 1);
       return radius;
     }
     function depthColor(z, maxDepth) {
@@ -243,18 +246,18 @@
       ctx.setLineDash([5, 5]);
       ctx.strokeStyle = '#ffe06688';
       if (viewMode === 'side') {
-        const rootX = width/2 - center.camera_z_m * scale;
+        const rootX = width/2;
         ctx.beginPath(); ctx.moveTo(rootX, 38); ctx.lineTo(rootX, height - 28); ctx.stroke();
         ctx.fillStyle = '#ff8b8b'; ctx.textAlign = 'left'; ctx.fillText('← NEARER  −Z', 16, 24);
         ctx.fillStyle = '#78c4ff'; ctx.textAlign = 'right'; ctx.fillText('FARTHER  +Z →', width - 16, 24);
       } else if (viewMode === 'top') {
-        const rootY = height/2 + center.camera_z_m * scale;
+        const rootY = height/2;
         ctx.beginPath(); ctx.moveTo(28, rootY); ctx.lineTo(width - 28, rootY); ctx.stroke();
         ctx.fillStyle = '#78c4ff'; ctx.textAlign = 'center'; ctx.fillText('↑ FARTHER  +Z', width/2, 24);
         ctx.fillStyle = '#ff8b8b'; ctx.fillText('↓ NEARER  −Z', width/2, height - 14);
       } else {
         ctx.fillStyle = '#cbd5e1'; ctx.textAlign = 'left';
-        ctx.fillText('FRONT: color shows original camera Z', 16, 24);
+        ctx.fillText('FRONT: RTMW3D input grid; color shows Z', 16, 24);
       }
       ctx.setLineDash([]);
       ctx.textAlign = 'left';
@@ -285,8 +288,7 @@
         ctx.strokeStyle = groupColors[edge.group] + 'aa';
         ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y); ctx.stroke();
       }
-      // This is an original-camera depth inspector.  Keep painter order tied
-      // to the reported Z even when the skeleton is rotated for inspection.
+      // Painter order remains tied to the unscaled RTMW3D relative Z.
       visible.sort((a,b) => b.point.z_relative_m - a.point.z_relative_m);
       for (const item of visible) {
         const screen = project(item.r);
@@ -297,7 +299,7 @@
         ctx.beginPath(); ctx.arc(screen.x, screen.y, selected ? 7 : (item.point.group === 'body' ? 4.5 : 2.5), 0, Math.PI*2); ctx.fill(); ctx.stroke();
         if (selected) {
           ctx.fillStyle = '#fff'; ctx.font = '12px ui-monospace, monospace';
-          ctx.fillText(`#${item.index} ${item.point.name} z=${fmt(item.point.z_relative_m)}m`, screen.x + 10, screen.y - 10);
+          ctx.fillText(`#${item.index} ${item.point.name} z=${fmt(item.point.z_relative_m)}m (${fmt(item.point.z_model_px,1)}px)`, screen.x + 10, screen.y - 10);
         }
       }
       drawViewGuide(width, height, scale, center);
@@ -311,8 +313,10 @@
         return matches && (showLow || point.score >= activeThreshold());
       }).map(point => `<tr data-index="${point.index}" class="${point.score < activeThreshold() ? 'low ' : ''}${point.index === selectedIndex ? 'selected' : ''}">
         <td>${point.index}</td><td>${esc(point.name)}</td><td>${esc(point.group)}</td>
-        <td>${fmt(point.x_px,1)}</td><td>${fmt(point.y_px,1)}</td><td class="${point.depth}">${fmt(point.z_relative_m)}</td>
-        <td>${fmt(point.camera_x_m)}</td><td>${fmt(point.camera_y_m)}</td><td>${fmt(point.score)}</td><td class="${point.depth}">${point.depth}</td>
+        <td>${fmt(point.x_px,1)}</td><td>${fmt(point.y_px,1)}</td>
+        <td>${fmt(point.model_x_px,1)}</td><td>${fmt(point.model_y_px,1)}</td>
+        <td class="${point.depth}">${fmt(point.z_relative_m)}</td><td class="${point.depth}">${fmt(point.z_model_px,1)}</td>
+        <td>${fmt(point.score)}</td><td class="${point.depth}">${point.depth}</td>
       </tr>`).join('');
       document.getElementById('rows').innerHTML = rows;
       document.querySelectorAll('#rows tr').forEach(row => row.addEventListener('click', () => {
@@ -321,6 +325,7 @@
     }
 
     threshold.addEventListener('input', () => { thresholdValue.textContent = Number(threshold.value).toFixed(2); renderRows(); draw(); });
+    depthScale.addEventListener('input', () => { depthScaleValue.textContent = `×${Number(depthScale.value).toFixed(2)}`; draw(); });
     document.getElementById('groups').addEventListener('change', event => {
       if (event.target.checked) enabledGroups.add(event.target.value); else enabledGroups.delete(event.target.value); draw();
     });
@@ -332,7 +337,7 @@
         button.classList.toggle('active', button.dataset.view === viewMode));
       draw();
     }
-    document.getElementById('reset').addEventListener('click', () => { zoom=1; selectedIndex=null; renderRows(); setView('front'); });
+    document.getElementById('reset').addEventListener('click', () => { zoom=1; depthScale.value=1; depthScaleValue.textContent='×1.00'; selectedIndex=null; renderRows(); setView('front'); });
     document.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
       setView(button.dataset.view);
     }));
@@ -341,6 +346,7 @@
     window.addEventListener('load', resizeCanvas);
     if ('ResizeObserver' in window) new ResizeObserver(resizeCanvas).observe(canvas);
     thresholdValue.textContent = Number(threshold.value).toFixed(2);
+    depthScaleValue.textContent = `×${Number(depthScale.value).toFixed(2)}`;
     setView('front');
     renderRows();
     resizeCanvas();
