@@ -343,7 +343,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         node = node_class()
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
 
-        output, driving_output, report, pose_image = node.run(
+        output, driving_output, report = node.run(
             sam_output(), sam_output(), image,
             "average",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -356,9 +356,6 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(len(person["hand_left_keypoints_2d"]), 21 * 3)
         self.assertEqual(driving_output[0]["canvas_width"], 384)
         self.assertEqual(driving_output[0]["canvas_height"], 512)
-        self.assertEqual(pose_image.shape, (1, 512, 384, 3))
-        self.assertEqual(pose_image.dtype, np.float32)
-        self.assertGreater(float(pose_image.max()), 0.0)
         self.assertIn("SAM 3D Body retargeted", report)
         self.assertIn("size_source=reference", report)
         self.assertIn("reference_height=", report)
@@ -375,7 +372,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         reference["keypoints_3d_full"] = full_keypoints()
         driving["keypoints_3d_full"] = full_keypoints()
 
-        _, _, report, _ = node.run(
+        _, _, report = node.run(
             reference, driving, image,
             "off",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -393,7 +390,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         driving_points[sr.NOSE] = (0.45, -0.70, 0.25)
         driving_sam3d = sam_output(driving_points)
 
-        _, driving_output, _, _ = node.run(
+        _, driving_output, _ = node.run(
             sam_output(), driving_sam3d, image,
             "off",
             1.4, 0.8, 1.3, 0.7, 1.2,
@@ -426,7 +423,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         node_class = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         self.assertEqual(
             node_class.RETURN_NAMES,
-            ("pose_keypoint", "driving_pose_keypoint", "report", "pose_image"),
+            ("pose_keypoint", "driving_pose_keypoint", "report"),
         )
         for name in (
                 "torso_scale", "shoulder_width_scale", "hip_width_scale",
@@ -437,46 +434,6 @@ class SAM3DRetargetTests(unittest.TestCase):
     def test_invalid_joint_shape_has_actionable_error(self):
         with self.assertRaisesRegex(ValueError, r"shape \(70, 3\)"):
             sr.extract_mhr70({"joints": np.zeros((17, 3))})
-
-    def test_depth_pose_draws_nearer_torso_over_farther_hand(self):
-        projected = np.zeros((70, 2), dtype=np.float64)
-        depth = np.full(70, 5.0, dtype=np.float64)
-        valid = np.zeros(70, dtype=bool)
-
-        # 胴体線（首→右腰）と右手の親指線を中央で交差させる。
-        projected[sr.NECK] = (50.0, 20.0)
-        projected[sr.RIGHT_HIP] = (50.0, 80.0)
-        projected[sr.RIGHT_WRIST] = (20.0, 50.0)
-        projected[24] = (80.0, 50.0)
-        valid[[sr.NECK, sr.RIGHT_HIP, sr.RIGHT_WRIST, 24]] = True
-        depth[[sr.NECK, sr.RIGHT_HIP]] = 4.0
-        depth[[sr.RIGHT_WRIST, 24]] = 6.0
-
-        image = sr.render_depth_pose(
-            projected, depth, valid, 100, 100, thickness=4
-        )[0]
-        expected_torso = np.asarray((0, 255, 170), dtype=np.float32) / 255.0
-        np.testing.assert_allclose(image[50, 50], expected_torso)
-
-    def test_depth_pose_draws_nearer_hand_over_farther_torso(self):
-        projected = np.zeros((70, 2), dtype=np.float64)
-        depth = np.full(70, 5.0, dtype=np.float64)
-        valid = np.zeros(70, dtype=bool)
-        projected[sr.NECK] = (50.0, 20.0)
-        projected[sr.RIGHT_HIP] = (50.0, 80.0)
-        projected[sr.RIGHT_WRIST] = (20.0, 50.0)
-        projected[24] = (80.0, 50.0)
-        valid[[sr.NECK, sr.RIGHT_HIP, sr.RIGHT_WRIST, 24]] = True
-        depth[[sr.NECK, sr.RIGHT_HIP]] = 6.0
-        depth[[sr.RIGHT_WRIST, 24]] = 4.0
-
-        image = sr.render_depth_pose(
-            projected, depth, valid, 100, 100, thickness=4
-        )[0]
-        expected_hand = np.asarray(
-            sr.HAND_DRAW_COLORS[0], dtype=np.float32
-        ) / 255.0
-        np.testing.assert_allclose(image[50, 50], expected_hand)
 
 
 if __name__ == "__main__":

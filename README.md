@@ -73,12 +73,7 @@ driving画像 ──────────────────────
 
 出力は、reference体型とdrivingポーズを合成した`pose_keypoint`、drivingの
 MHR70を変形・fitなしで直接投影した`driving_pose_keypoint`、処理内容を示す
-`report`、3D深度順に描画した`pose_image`の順です。
-
-`pose_image`は各骨線のカメラ深度を使い、奥側から手前側へ描画します。
-そのため、手が胴体の後ろにあるポーズでは交差部分へ胴体線が上描きされ、
-通常のOpenPose画像より前後関係を読み取りやすくなります。これは骨線同士の
-重なり表現であり、胴体の面全体で手を隠すシルエットマスクではありません。
+`report`の順です。
 
 referenceの各骨長は正規化せず、SAM 3D Bodyが推定した3D距離を直接転送します。
 基本式は`出力骨長 = reference骨長 × uniform_scale × 部位別scale`です。各scaleが1.0ならreferenceの3D骨長を維持し、drivingからは3D方向・ポーズを使用します。
