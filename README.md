@@ -3,7 +3,7 @@
 SAM 3D Bodyで推定した2つの3D骨格を組み合わせ、
 「reference画像の体型でdriving画像のポーズ」を取るOpenPose骨格を作るComfyUIノードです。
 
-referenceのMHR70骨格から3D骨長比を測り、drivingの3Dボーン方向へ適用したあと、
+referenceのMHR70骨格から3D骨長を直接取得し、drivingの3Dボーン方向へ適用したあと、
 driving側のカメラと焦点距離で2Dへ透視投影します。横向きや手足をカメラへ向けた
 ポーズでも、2Dの見かけの長さから奥行きを推測する必要がありません。
 
@@ -41,7 +41,6 @@ git clone git@github.com:gen-a6e/ComfyUI-PoseRetarget.git
 
 | パラメータ | 既定 | 説明 |
 |---|---|---|
-| `size_reference` | torso | referenceの骨長比率と、drivingの肩ポーズ比率を測る3D基準。torso / shoulder_width / body_height / head_to_heel |
 | `reference_symmetry` | average | averageは左右の推定誤差を平均化。offは左右それぞれの3D骨長をそのまま使用 |
 | `uniform_scale` | 1.0 | 腰中央を基準にした全身サイズ |
 | `leg_scale` | 1.0 | 脚と足の追加倍率 |
@@ -76,13 +75,13 @@ driving画像 ──────────────────────
 MHR70を変形・fitなしで直接投影した`driving_pose_keypoint`、処理内容を示す
 `report`の順です。
 
-referenceの各骨長は`size_reference`で正規化し、reference自身の基準サイズへ戻して転送します。
-そのため基本式は`出力骨長 = reference骨長比率 × reference_unit × uniform_scale × 部位別scale`で、各scaleが1.0ならreferenceの実際の3D骨長を維持します。drivingからは3D方向・ポーズを使用し、drivingの全体サイズは骨長の展開に使用しません。
+referenceの各骨長は正規化せず、SAM 3D Bodyが推定した3D距離を直接転送します。
+基本式は`出力骨長 = reference骨長 × uniform_scale × 部位別scale`です。各scaleが1.0ならreferenceの3D骨長を維持し、drivingからは3D方向・ポーズを使用します。
 肩幅、腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。
-肩中央の首に対する上下・奥行きと左右の肩線の傾きはdrivingから維持します。
-`report`にはreferenceと生成後の主要な正規化比率を`reference->generated`形式で表示します。
+肩中央の首に対する上下・奥行きはreference胴体長÷driving胴体長で体格換算し、左右の肩線の傾きはdrivingから維持します。
+`report`にはreferenceとdrivingの概算身長、およびreferenceと生成後の主要な実骨長を`reference->generated`形式で表示します。
 
-`head_to_heel`は、MHRの全308キーポイントから選んだ頭頂点に、頭・胴体・左右平均の脚・かかとの3D骨格長を加えた、姿勢に影響されにくい全身長を基準にします。この選択肢を使う場合は、全キーポイント出力に対応した`ComfyUI-SAM3DBody`でreferenceとdrivingを再実行してください。
+概算身長は、MHRの全308キーポイントから選んだ頭頂点に、頭・胴体・左右平均の脚・かかとの3D骨格長を加えて計測します。単眼画像からの推定値なので実測身長ではありません。このノードを使うには、全キーポイント出力に対応した`ComfyUI-SAM3DBody`でreferenceとdrivingを実行してください。
 
 MHR70には鼻・目・耳はありますが、輪郭や口を含む密な顔ランドマークはありません。
 そのためBODY18の顔点は出力し、`face_keypoints_2d`の70点はゼロconfidenceにします。

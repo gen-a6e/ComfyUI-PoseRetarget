@@ -64,8 +64,10 @@ def skeleton():
 
 
 def sam_output(points=None):
+    body = skeleton() if points is None else points
     return {
-        "joints": skeleton() if points is None else points,
+        "joints": body,
+        "keypoints_3d_full": full_keypoints(body),
         "camera": np.array([0.0, 0.0, 5.0]),
         "focal_length": np.array([800.0]),
     }
@@ -95,7 +97,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(actual), expected_length, places=7)
         np.testing.assert_allclose(actual / np.linalg.norm(actual), (0.0, 0.0, -1.0))
 
-    def test_reference_proportions_survive_large_scale_and_side_rotation(self):
+    def test_reference_measurements_survive_large_scale_and_side_rotation(self):
         reference = skeleton()
         reference[sr.LEFT_SHOULDER] = (0.34, -0.58, 0.0)
         reference[sr.RIGHT_SHOULDER] = (-0.34, -0.58, 0.0)
@@ -115,9 +117,9 @@ class SAM3DRetargetTests(unittest.TestCase):
         output, details = sr.retarget_mhr70(
             reference, driving, reference_symmetry="off")
 
-        for name, expected in details["reference_proportions"].items():
+        for name, expected in details["reference_measurements"].items():
             self.assertAlmostEqual(
-                details["generated_proportions"][name], expected,
+                details["generated_measurements"][name], expected,
                 places=7, msg=name)
 
         driving_direction = (
@@ -129,21 +131,18 @@ class SAM3DRetargetTests(unittest.TestCase):
             driving_direction / np.linalg.norm(driving_direction),
         )
 
-    def test_each_size_reference_matches_reference_unit_by_default(self):
+    def test_reference_bone_lengths_ignore_driving_body_size(self):
         reference = skeleton()
         driving = skeleton() * 1.85
 
-        for mode in ("torso", "shoulder_width", "body_height"):
-            with self.subTest(mode=mode):
-                output, details = sr.retarget_mhr70(
-                    reference, driving, size_reference=mode,
-                    reference_symmetry="off")
+        output, details = sr.retarget_mhr70(
+            reference, driving, reference_symmetry="off")
 
-                self.assertAlmostEqual(
-                    sr.body_unit(output, mode),
-                    details["reference_unit"],
-                    places=7,
-                )
+        for name, expected in details["reference_measurements"].items():
+            self.assertAlmostEqual(
+                details["generated_measurements"][name], expected,
+                places=7, msg=name,
+            )
 
     def test_full_mhr_head_top_is_selected_along_head_axis(self):
         body = skeleton()
@@ -158,11 +157,20 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(index, 184)
         np.testing.assert_allclose(head_top, (0.0, -1.02, 0.0))
 
-    def test_head_to_heel_uses_crown_and_both_heel_segments(self):
+    def test_estimated_height_uses_crown_and_both_heel_segments(self):
         body = skeleton()
         head_top = np.array((0.0, -1.02, 0.0))
         expected = (
-            sr.body_unit(body, "body_height")
+            np.linalg.norm(body[sr.NECK] - sr.hip_center(body))
+            + np.linalg.norm(body[sr.NOSE] - sr.shoulder_center(body))
+            + 0.5 * (
+                np.linalg.norm(body[sr.LEFT_KNEE] - body[sr.LEFT_HIP])
+                + np.linalg.norm(body[sr.RIGHT_KNEE] - body[sr.RIGHT_HIP])
+            )
+            + 0.5 * (
+                np.linalg.norm(body[sr.LEFT_ANKLE] - body[sr.LEFT_KNEE])
+                + np.linalg.norm(body[sr.RIGHT_ANKLE] - body[sr.RIGHT_KNEE])
+            )
             + np.linalg.norm(head_top - body[sr.NOSE])
             + 0.5 * (
                 np.linalg.norm(body[sr.LEFT_HEEL] - body[sr.LEFT_ANKLE])
@@ -171,42 +179,16 @@ class SAM3DRetargetTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(
-            sr.body_unit(body, "head_to_heel", head_top), expected, places=7
+            sr.estimated_height(body, head_top), expected, places=7
         )
 
-    def test_head_to_heel_keeps_reference_full_height(self):
-        reference = skeleton()
-        driving = skeleton() * 1.85
-        reference_head_top = np.array((0.0, -1.02, 0.0))
-        driving_head_top = reference_head_top * 1.85
+    def test_height_reporting_requires_updated_full_mhr_output(self):
+        output = sam_output()
+        del output["keypoints_3d_full"]
+        with self.assertRaisesRegex(ValueError, "height reporting requires"):
+            sr.extract_head_top(output)
 
-        output, details = sr.retarget_mhr70(
-            reference,
-            driving,
-            size_reference="head_to_heel",
-            reference_symmetry="off",
-            reference_head_top=reference_head_top,
-            driving_head_top=driving_head_top,
-        )
-
-        self.assertAlmostEqual(details["base_scale"], 1.0, places=7)
-        self.assertAlmostEqual(
-            details["driving_unit"], details["reference_unit"] * 1.85,
-            places=7,
-        )
-        self.assertAlmostEqual(
-            np.linalg.norm(output[sr.LEFT_ELBOW] - output[sr.LEFT_SHOULDER]),
-            np.linalg.norm(
-                reference[sr.LEFT_ELBOW] - reference[sr.LEFT_SHOULDER]
-            ),
-            places=7,
-        )
-
-    def test_head_to_heel_requires_updated_full_mhr_output(self):
-        with self.assertRaisesRegex(ValueError, "requires full MHR keypoints"):
-            sr.extract_head_top(sam_output())
-
-    def test_detailed_scales_control_each_reported_proportion(self):
+    def test_detailed_scales_control_each_reported_length(self):
         reference = skeleton()
         driving = skeleton()
 
@@ -227,8 +209,8 @@ class SAM3DRetargetTests(unittest.TestCase):
             shin_scale=0.70,
         )
 
-        reference_ratios = details["reference_proportions"]
-        generated_ratios = details["generated_proportions"]
+        reference_lengths = details["reference_measurements"]
+        generated_lengths = details["generated_measurements"]
         expected_scales = {
             "torso": 1.30,
             "shoulder_width": 0.80,
@@ -241,8 +223,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         }
         for name, multiplier in expected_scales.items():
             self.assertAlmostEqual(
-                generated_ratios[name],
-                reference_ratios[name] * multiplier,
+                generated_lengths[name],
+                reference_lengths[name] * multiplier,
                 places=7,
                 msg=name,
             )
@@ -260,8 +242,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         actual = np.linalg.norm(
             output[sr.NOSE] - sr.shoulder_center(output))
         expected = (
-            details["reference_proportions"]["shoulder_to_nose"]
-            * details["reference_unit"] * 1.25 * 0.80
+            details["reference_measurements"]["shoulder_to_nose"]
+            * 1.25 * 0.80
         )
         self.assertAlmostEqual(actual, expected, places=7)
 
@@ -280,9 +262,7 @@ class SAM3DRetargetTests(unittest.TestCase):
 
         expected = (
             sr.shoulder_center(driving) - driving[sr.NECK]
-        ) / details["driving_unit"] * (
-            details["reference_unit"] * 1.25
-        )
+        ) * details["shoulder_pose_scale"]
         actual = sr.shoulder_center(output) - output[sr.NECK]
         np.testing.assert_allclose(actual, expected)
 
@@ -365,7 +345,7 @@ class SAM3DRetargetTests(unittest.TestCase):
 
         output, driving_output, report = node.run(
             sam_output(), sam_output(), image,
-            "torso", "average",
+            "average",
             1.0, 1.0, 1.0, 1.0, 1.0,
             "off", 16)
 
@@ -378,10 +358,12 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(driving_output[0]["canvas_height"], 512)
         self.assertIn("SAM 3D Body retargeted", report)
         self.assertIn("size_source=reference", report)
-        self.assertIn("Ratios reference->generated", report)
+        self.assertIn("reference_height=", report)
+        self.assertIn("driving_height=", report)
+        self.assertIn("Lengths reference->generated", report)
         self.assertIn("shoulder_to_nose:", report)
 
-    def test_node_uses_full_mhr_head_top_for_head_to_heel(self):
+    def test_node_uses_full_mhr_head_top_for_height_report(self):
         node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         node = node_class()
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
@@ -392,11 +374,12 @@ class SAM3DRetargetTests(unittest.TestCase):
 
         _, _, report = node.run(
             reference, driving, image,
-            "head_to_heel", "off",
+            "off",
             1.0, 1.0, 1.0, 1.0, 1.0,
             "off", 16)
 
-        self.assertIn("normalized by head_to_heel", report)
+        self.assertIn("reference_height=", report)
+        self.assertIn("driving_height=", report)
         self.assertIn("reference=184, driving=184", report)
 
     def test_driving_output_is_direct_projection_without_fit_or_retarget(self):
@@ -409,7 +392,7 @@ class SAM3DRetargetTests(unittest.TestCase):
 
         _, driving_output, _ = node.run(
             sam_output(), driving_sam3d, image,
-            "torso", "off",
+            "off",
             1.4, 0.8, 1.3, 0.7, 1.2,
             "fit_exactly", 80)
 
@@ -436,7 +419,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(inputs["driving_sam3d"], ("SAM3D_OUTPUT",))
         self.assertEqual(inputs["driving_image"], ("IMAGE",))
         self.assertEqual(inputs["reference_symmetry"], (["average", "off"],))
-        self.assertIn("head_to_heel", inputs["size_reference"][0])
+        self.assertNotIn("size_reference", inputs)
         node_class = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         self.assertEqual(
             node_class.RETURN_NAMES,
