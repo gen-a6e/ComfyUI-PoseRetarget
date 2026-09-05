@@ -316,7 +316,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         node = node_class()
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
 
-        output, report = node.run(
+        output, driving_output, report = node.run(
             sam_output(), sam_output(), image,
             "torso", "average",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -327,6 +327,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         person = output[0]["people"][0]
         self.assertEqual(len(person["pose_keypoints_2d"]), 18 * 3)
         self.assertEqual(len(person["hand_left_keypoints_2d"]), 21 * 3)
+        self.assertEqual(driving_output[0]["canvas_width"], 384)
+        self.assertEqual(driving_output[0]["canvas_height"], 512)
         self.assertIn("SAM 3D Body retargeted", report)
         self.assertIn("Ratios reference->generated", report)
         self.assertIn("shoulder_to_nose:", report)
@@ -340,7 +342,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         reference["keypoints_3d_full"] = full_keypoints()
         driving["keypoints_3d_full"] = full_keypoints()
 
-        _, report = node.run(
+        _, _, report = node.run(
             reference, driving, image,
             "head_to_heel", "off",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -348,6 +350,32 @@ class SAM3DRetargetTests(unittest.TestCase):
 
         self.assertIn("normalized by head_to_heel", report)
         self.assertIn("reference=184, driving=184", report)
+
+    def test_driving_output_is_direct_projection_without_fit_or_retarget(self):
+        node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
+        node = node_class()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        driving_points = skeleton()
+        driving_points[sr.NOSE] = (0.45, -0.70, 0.25)
+        driving_sam3d = sam_output(driving_points)
+
+        _, driving_output, _ = node.run(
+            sam_output(), driving_sam3d, image,
+            "torso", "off",
+            1.4, 0.8, 1.3, 0.7, 1.2,
+            "fit_exactly", 80)
+
+        expected, valid, _ = sr.project_mhr70(
+            driving_points,
+            driving_sam3d["camera"],
+            np.array((800.0, 800.0)),
+            384,
+            512,
+        )
+        person = driving_output[0]["people"][0]
+        body = np.asarray(person["pose_keypoints_2d"]).reshape(18, 3)
+        np.testing.assert_allclose(body[0, :2], expected[sr.NOSE])
+        self.assertEqual(body[0, 2], float(valid[sr.NOSE]))
 
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
         package = load_package()
@@ -361,6 +389,11 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(inputs["driving_image"], ("IMAGE",))
         self.assertEqual(inputs["reference_symmetry"], (["average", "off"],))
         self.assertIn("head_to_heel", inputs["size_reference"][0])
+        node_class = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
+        self.assertEqual(
+            node_class.RETURN_NAMES,
+            ("pose_keypoint", "driving_pose_keypoint", "report"),
+        )
         for name in (
                 "torso_scale", "shoulder_width_scale", "hip_width_scale",
                 "neck_scale", "upper_arm_scale", "forearm_scale",

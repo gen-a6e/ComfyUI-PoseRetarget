@@ -60,8 +60,8 @@ class SAM3DBodyPoseRetarget:
             }
         }
 
-    RETURN_TYPES = ("POSE_KEYPOINT", "STRING")
-    RETURN_NAMES = ("pose_keypoint", "report")
+    RETURN_TYPES = ("POSE_KEYPOINT", "POSE_KEYPOINT", "STRING")
+    RETURN_NAMES = ("pose_keypoint", "driving_pose_keypoint", "report")
     FUNCTION = "run"
     CATEGORY = "pose-retarget"
 
@@ -116,6 +116,11 @@ class SAM3DBodyPoseRetarget:
             mode=fit_to_canvas, margin=canvas_margin)
         output = to_pose_keypoint(projected, valid, width, height)
 
+        driving_projected, driving_valid, _ = project_mhr70(
+            driving, camera, focal_xy, width, height)
+        driving_output = to_pose_keypoint(
+            driving_projected, driving_valid, width, height)
+
         valid_depth = depth[valid]
         depth_note = "unavailable"
         if valid_depth.size:
@@ -144,11 +149,17 @@ class SAM3DBodyPoseRetarget:
         invalid_count = int((~valid).sum())
         if invalid_count:
             report += f" WARNING: {invalid_count} point(s) were behind the camera."
+        driving_invalid_count = int((~driving_valid).sum())
+        if driving_invalid_count:
+            report += (
+                f" WARNING: {driving_invalid_count} original driving point(s) "
+                "were behind the camera."
+            )
         report += (
             " Dense face landmarks are unavailable in MHR70; "
             "face_keypoints_2d is zero-confidence."
         )
-        return (output, report)
+        return (output, driving_output, report)
 
 
 NODE_CLASS_MAPPINGS = {

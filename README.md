@@ -72,6 +72,10 @@ driving画像 ──────────────────────
 出力する`POSE_KEYPOINT`は、ComfyUI標準の`SDPose Draw Keypoints`に合わせた
 絶対ピクセル座標です。
 
+出力は、reference体型とdrivingポーズを合成した`pose_keypoint`、drivingの
+MHR70を変形・fitなしで直接投影した`driving_pose_keypoint`、処理内容を示す
+`report`の順です。
+
 referenceの各骨長は`size_reference`で正規化した比率としてdrivingへ転送します。
 肩幅、腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。
 `report`にはreferenceと生成後の主要な正規化比率を`reference->generated`形式で表示します。
