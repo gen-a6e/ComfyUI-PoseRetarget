@@ -6,6 +6,7 @@ from .sam3d_retarget import (
     fit_projected,
     image_size,
     project_mhr70,
+    render_depth_pose,
     retarget_mhr70,
     to_pose_keypoint,
 )
@@ -60,8 +61,10 @@ class SAM3DBodyPoseRetarget:
             }
         }
 
-    RETURN_TYPES = ("POSE_KEYPOINT", "POSE_KEYPOINT", "STRING")
-    RETURN_NAMES = ("pose_keypoint", "driving_pose_keypoint", "report")
+    RETURN_TYPES = ("POSE_KEYPOINT", "POSE_KEYPOINT", "STRING", "IMAGE")
+    RETURN_NAMES = (
+        "pose_keypoint", "driving_pose_keypoint", "report", "pose_image"
+    )
     FUNCTION = "run"
     CATEGORY = "pose-retarget"
 
@@ -118,6 +121,16 @@ class SAM3DBodyPoseRetarget:
             mode=fit_to_canvas, margin=canvas_margin)
         output = to_pose_keypoint(projected, valid, width, height)
 
+        # Zを保持できないPOSE_KEYPOINTとは別に、遠い骨から順に重ねた画像も生成する。
+        # 手が胴体の後ろにある場合は、交差部分で胴体線が手の線を覆う。
+        pose_image = render_depth_pose(
+            projected, depth, valid, width, height
+        )
+        # ComfyUI上ではIMAGEはtorch.Tensor。テスト時のnumpy入力にも対応しつつ、
+        # 実行時は入力画像と同じdtype・deviceのTensorへ戻す。
+        if hasattr(driving_image, "new_tensor"):
+            pose_image = driving_image.new_tensor(pose_image)
+
         # 4. 比較用として、加工前のdriving骨格も同じカメラで直接投影する。
         # scale・retarget・fitを一切適用しないため、SAM 3D Bodyの元結果を確認できる。
         driving_projected, driving_valid, _ = project_mhr70(
@@ -166,8 +179,8 @@ class SAM3DBodyPoseRetarget:
             "face_keypoints_2d is zero-confidence."
         )
 
-        # 出力順は、合成結果・元driving・report。ComfyUIのソケット順と一致させる。
-        return (output, driving_output, report)
+        # 既存3出力の順番を維持し、深度対応画像を末尾へ追加する。
+        return (output, driving_output, report, pose_image)
 
 
 NODE_CLASS_MAPPINGS = {

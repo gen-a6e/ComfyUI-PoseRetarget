@@ -6,6 +6,7 @@
 3. drivingのボーン方向・肩の上下・人物位置へreferenceの実骨長を適用する。
 4. driving側のカメラで3D座標を2Dピクセル座標へ投影する。
 5. BODY18＋左右HAND21の``POSE_KEYPOINT``形式へ変換する。
+6. カメラ深度の奥から手前へ骨線を重ねた``IMAGE``も生成する。
 
 SAM 3D Body本体やtorchには依存せず、辞書とnumpy配列だけを受け取る。これにより、
 ComfyUIとの接続部分を薄く保ち、3D計算を単体テストできるようにしている。
@@ -95,6 +96,38 @@ HAND_EDGES = (
     + _finger_edges(LEFT_WRIST, LEFT_HAND_CHAINS)
 )
 RETARGET_EDGES = BODY_EDGES + HAND_EDGES
+
+
+# OpenPose BODY18と同じ接続。各色はRGBで、黒背景上でも部位を追いやすい配色にする。
+# 3D深度で並べ替えるため、ここでは描画順を固定しない。
+BODY_DRAW_EDGES = (
+    (NECK, RIGHT_SHOULDER, (255, 85, 0)),
+    (RIGHT_SHOULDER, RIGHT_ELBOW, (255, 170, 0)),
+    (RIGHT_ELBOW, RIGHT_WRIST, (255, 255, 0)),
+    (NECK, LEFT_SHOULDER, (85, 255, 0)),
+    (LEFT_SHOULDER, LEFT_ELBOW, (0, 255, 0)),
+    (LEFT_ELBOW, LEFT_WRIST, (0, 255, 85)),
+    (NECK, RIGHT_HIP, (0, 255, 170)),
+    (RIGHT_HIP, RIGHT_KNEE, (0, 255, 255)),
+    (RIGHT_KNEE, RIGHT_ANKLE, (0, 170, 255)),
+    (NECK, LEFT_HIP, (0, 85, 255)),
+    (LEFT_HIP, LEFT_KNEE, (0, 0, 255)),
+    (LEFT_KNEE, LEFT_ANKLE, (85, 0, 255)),
+    (NECK, NOSE, (255, 0, 0)),
+    (NOSE, RIGHT_EYE, (170, 0, 255)),
+    (RIGHT_EYE, RIGHT_EAR, (255, 0, 255)),
+    (NOSE, LEFT_EYE, (255, 0, 170)),
+    (LEFT_EYE, LEFT_EAR, (255, 0, 85)),
+)
+
+# 指ごとに色を変える。左右の手で同じ色体系を使い、OpenPoseらしい表示にする。
+HAND_DRAW_COLORS = (
+    (255, 80, 80),
+    (255, 190, 80),
+    (80, 255, 120),
+    (80, 190, 255),
+    (210, 80, 255),
+)
 
 
 # 左右対称化で対応させる関節番号。子の番号だけで、その関節へ入る骨を識別できる。
@@ -621,6 +654,118 @@ def to_pose_keypoint(projected, valid, width, height):
         "canvas_height": int(height),
         "people": [person],
     }]
+
+
+def _draw_segment(image, start, end, color, thickness):
+    """外部描画ライブラリを使わず、丸端の線分をRGB画像へ描く。"""
+    start = np.asarray(start, dtype=np.float64)
+    end = np.asarray(end, dtype=np.float64)
+    radius = max(int(np.ceil(float(thickness) * 0.5)), 1)
+    height, width = image.shape[:2]
+    if not np.all(np.isfinite(start)) or not np.all(np.isfinite(end)):
+        return
+
+    # 画面外の長大な投影線を先にcanvas周辺へ切り詰め、不要なサンプル生成を防ぐ。
+    segment = end - start
+    lower = np.array((-radius, -radius), dtype=np.float64)
+    upper = np.array((width - 1 + radius, height - 1 + radius), dtype=np.float64)
+    enter, leave = 0.0, 1.0
+    for direction, distance in (
+        (-segment[0], start[0] - lower[0]),
+        (segment[0], upper[0] - start[0]),
+        (-segment[1], start[1] - lower[1]),
+        (segment[1], upper[1] - start[1]),
+    ):
+        if abs(direction) <= EPS:
+            if distance < 0.0:
+                return
+            continue
+        boundary = distance / direction
+        if direction < 0.0:
+            enter = max(enter, boundary)
+        else:
+            leave = min(leave, boundary)
+        if enter > leave:
+            return
+    original_start = start
+    start = original_start + enter * segment
+    end = original_start + leave * segment
+    segment = end - start
+    sample_count = max(int(np.ceil(np.linalg.norm(segment))) + 1, 1)
+    amount = np.linspace(0.0, 1.0, sample_count)
+    samples = np.rint(start + amount[:, None] * segment).astype(np.int64)
+    rgb = np.asarray(color, dtype=np.float32) / 255.0
+
+    # 線分の各サンプルへ小さな円を押す方式なら、4K画像でも巨大なbbox配列を作らない。
+    for offset_y in range(-radius, radius + 1):
+        for offset_x in range(-radius, radius + 1):
+            if offset_x ** 2 + offset_y ** 2 > radius ** 2:
+                continue
+            xx = samples[:, 0] + offset_x
+            yy = samples[:, 1] + offset_y
+            inside = (xx >= 0) & (xx < width) & (yy >= 0) & (yy < height)
+            image[yy[inside], xx[inside]] = rgb
+
+
+def _hand_draw_edges():
+    """左右の指骨を、描画色付きの線分一覧にする。"""
+    edges = []
+    for wrist, chains in (
+        (RIGHT_WRIST, RIGHT_HAND_CHAINS),
+        (LEFT_WRIST, LEFT_HAND_CHAINS),
+    ):
+        for color, chain in zip(HAND_DRAW_COLORS, chains):
+            parent = wrist
+            for child in chain:
+                edges.append((parent, child, color))
+                parent = child
+    return tuple(edges)
+
+
+HAND_DRAW_EDGES = _hand_draw_edges()
+DEPTH_DRAW_EDGES = BODY_DRAW_EDGES + HAND_DRAW_EDGES
+
+
+def render_depth_pose(projected, depth, valid, width, height, thickness=None):
+    """3D深度の奥から手前へ骨線を重ねたComfyUI IMAGEを返す。
+
+    通常のPOSE_KEYPOINTはZを保持できない。ここでは各線分の両端の平均depthを使う
+    painter's algorithmにより、胴体より後ろの手へ胴体線が重なるように描画する。
+    """
+    projected = np.asarray(projected, dtype=np.float64)
+    depth = np.asarray(depth, dtype=np.float64).reshape(-1)
+    valid = np.asarray(valid, dtype=bool).reshape(-1)
+    if projected.shape != (MHR70_COUNT, 2):
+        raise ValueError("projected MHR70 must have shape (70, 2)")
+    if depth.shape != (MHR70_COUNT,) or valid.shape != (MHR70_COUNT,):
+        raise ValueError("depth and valid must each have shape (70,)")
+    width, height = int(width), int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError("pose image dimensions must be positive")
+    if thickness is None:
+        thickness = max(2, int(round(min(width, height) / 128.0)))
+
+    primitives = []
+    for start_index, end_index, color in DEPTH_DRAW_EDGES:
+        if not valid[start_index] or not valid[end_index]:
+            continue
+        mean_depth = 0.5 * (depth[start_index] + depth[end_index])
+        if not np.isfinite(mean_depth):
+            continue
+        primitives.append((float(mean_depth), start_index, end_index, color))
+
+    # カメラ座標Zが大きいほど遠い。遠い線を先に、近い線を後から描画する。
+    primitives.sort(key=lambda item: item[0], reverse=True)
+    image = np.zeros((height, width, 3), dtype=np.float32)
+    for _, start_index, end_index, color in primitives:
+        _draw_segment(
+            image,
+            projected[start_index],
+            projected[end_index],
+            color,
+            thickness,
+        )
+    return image[None, ...]
 
 
 def image_size(image):
