@@ -102,8 +102,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         reference[sr.LEFT_HIP] = (0.11, 0.0, 0.0)
         reference[sr.RIGHT_HIP] = (-0.11, 0.0, 0.0)
 
-        # A much larger driving person viewed from the side. The rotation
-        # puts lateral and forward-reaching bones primarily on the Z axis.
+        # referenceより大きい人物を横から見た状態。回転により、左右・前方へ伸びる骨は
+        # 主にZ軸方向を向く。2D距離ではなく3D方向を使っていることを確認する。
         angle = np.deg2rad(88.0)
         rotation = np.array([
             [np.cos(angle), 0.0, np.sin(angle)],
@@ -148,7 +148,7 @@ class SAM3DRetargetTests(unittest.TestCase):
     def test_full_mhr_head_top_is_selected_along_head_axis(self):
         body = skeleton()
         full = full_keypoints(body)
-        # A point far to the side must not win over the anatomical crown.
+        # 横に遠い点ではなく、首→頭方向で最上部にある点が頭頂として選ばれること。
         full[200] = (3.0, -0.80, 0.0)
         output = sam_output(body)
         output["keypoints_3d_full"] = full

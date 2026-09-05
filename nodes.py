@@ -11,15 +11,17 @@ from .sam3d_retarget import (
 
 
 class SAM3DBodyPoseRetarget:
-    """Reference proportions plus driving directions in true 3D."""
+    """referenceの体型とdrivingのポーズを3D空間で合成するComfyUIノード。"""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
+                # 2枚の画像をSAM 3D Bodyで解析した結果と、出力サイズの基準画像。
                 "reference_sam3d": ("SAM3D_OUTPUT",),
                 "driving_sam3d": ("SAM3D_OUTPUT",),
                 "driving_image": ("IMAGE",),
+                # 体型を正規化する基準と、referenceの左右差の扱い。
                 "size_reference": ([
                     "torso", "shoulder_width", "body_height", "head_to_heel"
                 ],),
@@ -72,8 +74,12 @@ class SAM3DBodyPoseRetarget:
             shoulder_width_scale=1.0, hip_width_scale=1.0,
             neck_scale=1.0, upper_arm_scale=1.0, forearm_scale=1.0,
             thigh_scale=1.0, shin_scale=1.0):
+        # 1. SAM3D_OUTPUTから、体・足・手を含むMHR70の3D座標を取り出す。
         reference = extract_mhr70(reference_sam3d)
         driving = extract_mhr70(driving_sam3d)
+
+        # head_to_heelを選んだ場合だけ、MHR70には含まれない頭頂点も取得する。
+        # 他の基準では308点を要求しないため、従来のSAM3D_OUTPUTも利用できる。
         reference_head_top = None
         driving_head_top = None
         reference_head_top_index = None
@@ -85,6 +91,9 @@ class SAM3DBodyPoseRetarget:
             driving_head_top, driving_head_top_index = extract_head_top(
                 driving_sam3d, driving
             )
+
+        # 2. referenceの各骨長とdrivingの各ボーン方向を合成する。
+        # ここではまだ3D座標のままで、カメラ投影やcanvas調整は行わない。
         retargeted, details = retarget_mhr70(
             reference,
             driving,
@@ -107,6 +116,8 @@ class SAM3DBodyPoseRetarget:
             driving_head_top=driving_head_top,
         )
 
+        # 3. driving画像と同じカメラ・焦点距離・canvasサイズで2Dへ投影する。
+        # fit_to_canvasは合成後の骨格だけに適用し、必要なら全身が収まるよう移動・縮小する。
         width, height = image_size(driving_image)
         camera, focal_xy = extract_camera(driving_sam3d)
         projected, valid, depth = project_mhr70(
@@ -116,11 +127,14 @@ class SAM3DBodyPoseRetarget:
             mode=fit_to_canvas, margin=canvas_margin)
         output = to_pose_keypoint(projected, valid, width, height)
 
+        # 4. 比較用として、加工前のdriving骨格も同じカメラで直接投影する。
+        # scale・retarget・fitを一切適用しないため、SAM 3D Bodyの元結果を確認できる。
         driving_projected, driving_valid, _ = project_mhr70(
             driving, camera, focal_xy, width, height)
         driving_output = to_pose_keypoint(
             driving_projected, driving_valid, width, height)
 
+        # 5. 使用した単位、倍率、生成前後の体型比率を人が確認できる文字列にまとめる。
         valid_depth = depth[valid]
         depth_note = "unavailable"
         if valid_depth.size:
@@ -141,6 +155,7 @@ class SAM3DBodyPoseRetarget:
             f"(normalized by {details['size_reference']}): {ratio_note}."
         )
         if size_reference == "head_to_heel":
+            # 実データ確認用に、頭頂として選ばれた308点中の番号も残す。
             report += (
                 " Head-top full-MHR indices "
                 f"reference={reference_head_top_index}, "
@@ -148,6 +163,7 @@ class SAM3DBodyPoseRetarget:
             )
         invalid_count = int((~valid).sum())
         if invalid_count:
+            # カメラより後ろにある点は2Dへ投影できず、confidence 0になる。
             report += f" WARNING: {invalid_count} point(s) were behind the camera."
         driving_invalid_count = int((~driving_valid).sum())
         if driving_invalid_count:
@@ -159,6 +175,8 @@ class SAM3DBodyPoseRetarget:
             " Dense face landmarks are unavailable in MHR70; "
             "face_keypoints_2d is zero-confidence."
         )
+
+        # 出力順は、合成結果・元driving・report。ComfyUIのソケット順と一致させる。
         return (output, driving_output, report)
 
 

@@ -1,8 +1,14 @@
-"""3D bone-length retargeting for SAM 3D Body's MHR70 output.
+"""SAM 3D BodyのMHR70を使って、体型とポーズを3Dで合成する計算モジュール。
 
-This module deliberately has no dependency on SAM 3D Body or torch.  It
-consumes the ``SAM3D_OUTPUT`` dictionaries emitted by ComfyUI-SAM3DBody and
-keeps all geometry operations in numpy so the integration remains light.
+処理の流れ:
+1. ``SAM3D_OUTPUT``からreferenceとdrivingのMHR70座標を取得する。
+2. referenceの骨長を選択した身体サイズで正規化し、体型比率にする。
+3. drivingのボーン方向・肩の上下・人物位置へreferenceの体型比率を適用する。
+4. driving側のカメラで3D座標を2Dピクセル座標へ投影する。
+5. BODY18＋左右HAND21の``POSE_KEYPOINT``形式へ変換する。
+
+SAM 3D Body本体やtorchには依存せず、辞書とnumpy配列だけを受け取る。これにより、
+ComfyUIとの接続部分を薄く保ち、3D計算を単体テストできるようにしている。
 """
 
 from __future__ import annotations
@@ -14,7 +20,7 @@ EPS = 1e-8
 MHR70_COUNT = 70
 MHR_KEYPOINT_COUNT = 308
 
-# MHR70 indices used by SAM 3D Body.
+# SAM 3D Bodyが返すMHR70配列内の主要な関節番号。
 NOSE = 0
 LEFT_EYE, RIGHT_EYE = 1, 2
 LEFT_EAR, RIGHT_EAR = 3, 4
@@ -28,8 +34,8 @@ RIGHT_WRIST, LEFT_WRIST = 41, 62
 NECK = 69
 
 
-# The synthetic root is the midpoint of the hips.  Parents always precede
-# children, including the proximal-to-distal order of every finger.
+# MHR70には単独の腰中心がないため、左右の股関節の中点を仮想rootとして使う。
+# 各要素は「子、親、部位」。親から子の順に配置できるよう、体幹側から並べる。
 BODY_EDGES = (
     (NECK, None, "torso"),
     (LEFT_HIP, None, "body"),
@@ -59,6 +65,7 @@ BODY_EDGES = (
 
 
 def _finger_edges(wrist, chains):
+    """手首から指先へ向かう各指の接続を、共通の骨形式へ変換する。"""
     edges = []
     for chain in chains:
         parent = wrist
@@ -68,6 +75,7 @@ def _finger_edges(wrist, chains):
     return tuple(edges)
 
 
+# MHR70の手は指先から並んでいるため、生成時に使いやすい「手首→指先」順へ並べ直す。
 RIGHT_HAND_CHAINS = (
     (24, 23, 22, 21),
     (28, 27, 26, 25),
@@ -89,8 +97,7 @@ HAND_EDGES = (
 RETARGET_EDGES = BODY_EDGES + HAND_EDGES
 
 
-# Corresponding left/right children.  Each child uniquely identifies its
-# incoming edge, so this also mirrors the matching bone.
+# 左右対称化で対応させる関節番号。子の番号だけで、その関節へ入る骨を識別できる。
 MIRROR_CHILD = {
     LEFT_HIP: RIGHT_HIP,
     LEFT_SHOULDER: RIGHT_SHOULDER,
@@ -109,6 +116,7 @@ for left_chain, right_chain in zip(LEFT_HAND_CHAINS, RIGHT_HAND_CHAINS):
 MIRROR_CHILD.update({right: left for left, right in tuple(MIRROR_CHILD.items())})
 
 
+# SAPIENS/SDPoseが期待するCOCO BODY18順に、MHR70の関節番号を対応させる。
 COCO18_FROM_MHR70 = (
     NOSE,
     NECK,
@@ -130,6 +138,7 @@ COCO18_FROM_MHR70 = (
     LEFT_EAR,
 )
 
+# OpenPoseのHAND21順は「手首＋各指を親指から根元→指先」。
 RIGHT_HAND_FROM_MHR70 = (
     RIGHT_WRIST,
     24, 23, 22, 21,
@@ -149,7 +158,7 @@ LEFT_HAND_FROM_MHR70 = (
 
 
 def as_numpy(value, name):
-    """Convert numpy/torch-like values without importing torch."""
+    """torchをimportせず、numpy配列やTensor風オブジェクトをnumpyへ変換する。"""
     if value is None:
         raise ValueError(f"SAM3D output is missing {name}")
     if hasattr(value, "detach"):
@@ -165,7 +174,7 @@ def as_numpy(value, name):
 
 
 def extract_mhr70(output):
-    """Read the 70 camera-space joints from a SAM3D_OUTPUT dictionary."""
+    """SAM3D_OUTPUTから、カメラ座標系のMHR70を安全に取り出す。"""
     if not isinstance(output, dict):
         raise ValueError("SAM3D input must be a SAM3D_OUTPUT dictionary")
     value = output.get("joints")
@@ -185,7 +194,7 @@ def extract_mhr70(output):
 
 
 def extract_head_top(output, mhr70=None):
-    """Return the uppermost dense MHR head keypoint and its full-set index."""
+    """MHR全308点から頭頂点を選び、その3D座標と元の番号を返す。"""
     if not isinstance(output, dict):
         raise ValueError("SAM3D input must be a SAM3D_OUTPUT dictionary")
     value = output.get("keypoints_3d_full")
@@ -218,9 +227,9 @@ def extract_head_top(output, mhr70=None):
     if body.shape != (MHR70_COUNT, 3):
         raise ValueError("mhr70 must have shape (70, 3)")
 
-    # Points 70..307 are dense head/face landmarks. Select the landmark
-    # furthest along the neck-to-head axis, so raised hands can never be
-    # mistaken for the crown and a tilted head remains supported.
+    # 70〜307番は密な頭部・顔ランドマーク。首から顔中心へ向かう軸上で最も遠い点を
+    # 頭頂とする。腕の点を候補に含めないため、手を上げても頭頂と誤認しない。
+    # 頭そのものの軸を使うので、首を傾けた姿勢にも追従する。
     head_center = np.mean(
         body[[NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR]], axis=0
     )
@@ -242,20 +251,24 @@ def extract_head_top(output, mhr70=None):
 
 
 def hip_center(points):
+    """左右の股関節の中点を返す。生成骨格のrootとして使用する。"""
     return (points[LEFT_HIP] + points[RIGHT_HIP]) * 0.5
 
 
 def shoulder_center(points):
+    """左右の肩の中点を返す。肩全体の上下移動や頭の基準に使用する。"""
     return (points[LEFT_SHOULDER] + points[RIGHT_SHOULDER]) * 0.5
 
 
 def _edge_delta(points, child, parent):
+    """親から子へ向かう3Dベクトルを返す。親がNoneなら腰中心を使う。"""
     origin = hip_center(points) if parent is None else points[parent]
     return points[child] - origin
 
 
 def body_unit(points, mode="torso", head_top=None):
-    """Return a pose-resistant 3D size unit for proportion transfer."""
+    """体型比率の分母となる、姿勢変化に強い3D身体サイズを返す。"""
+    # 直立時の上下差ではなく骨の長さを加算するため、屈伸や前屈でも値が縮みにくい。
     torso = np.linalg.norm(points[NECK] - hip_center(points))
     shoulder = np.linalg.norm(points[LEFT_SHOULDER] - points[RIGHT_SHOULDER])
     body_height = (
@@ -270,6 +283,7 @@ def body_unit(points, mode="torso", head_top=None):
     )
     head_to_heel = None
     if head_top is not None:
+        # body_heightに頭頂→鼻と、左右平均の足首→かかとを加えて全身長にする。
         head_top = np.asarray(head_top, dtype=np.float64).reshape(-1)
         if head_top.size < 3 or not np.all(np.isfinite(head_top[:3])):
             raise ValueError("head_top must contain three finite coordinates")
@@ -284,6 +298,7 @@ def body_unit(points, mode="torso", head_top=None):
     elif mode == "head_to_heel":
         raise ValueError("head_to_heel requires a full-MHR head-top keypoint")
 
+    # 選択した計測値が壊れている場合は、同じ骨格から取れる安定した値へ順に退避する。
     candidates = {
         "torso": (torso, shoulder, body_height),
         "shoulder_width": (shoulder, torso, body_height),
@@ -297,16 +312,19 @@ def body_unit(points, mode="torso", head_top=None):
 
 
 def reference_lengths(points, symmetry="average"):
+    """referenceの各骨長を取得し、必要なら左右の推定誤差を平均化する。"""
     lengths = {
         child: float(np.linalg.norm(_edge_delta(points, child, parent)))
         for child, parent, _ in RETARGET_EDGES
     }
     if symmetry == "off":
+        # offでは左右差を体型情報としてそのまま残す。
         return lengths
     if symmetry != "average":
         raise ValueError(f"unknown reference symmetry mode: {symmetry}")
 
     visited = set()
+    # 同じ左右ペアを二重処理しないよう、番号を並べ替えた組を記録する。
     for child, mirror in MIRROR_CHILD.items():
         pair = tuple(sorted((child, mirror)))
         if pair in visited or child not in lengths or mirror not in lengths:
@@ -320,7 +338,7 @@ def reference_lengths(points, symmetry="average"):
 
 
 def body_measurements(points):
-    """Return the principal 3D lengths shown in the retarget report."""
+    """reportへ表示する主要部位の3D長を返す。左右部位は平均値にする。"""
     return {
         "torso": float(np.linalg.norm(points[NECK] - hip_center(points))),
         "shoulder_width": float(np.linalg.norm(
@@ -348,7 +366,7 @@ def body_measurements(points):
 
 
 def normalized_body_proportions(points, unit):
-    """Normalize report measurements by one explicit body-size unit."""
+    """各部位の長さを身体サイズで割り、人物サイズに依存しない体型比率にする。"""
     if not np.isfinite(unit) or unit <= EPS:
         raise ValueError("body-size unit must be positive")
     return {
@@ -358,7 +376,8 @@ def normalized_body_proportions(points, unit):
 
 
 def _unit_direction(primary, fallback):
-    """Return a stable unit vector, preferring the driving-pose direction."""
+    """drivingを優先し、長さを1にした安定なボーン方向を返す。"""
+    # driving側の骨が潰れている場合だけreference方向へ退避する。
     for value in (primary, fallback):
         norm = float(np.linalg.norm(value))
         if np.isfinite(norm) and norm > EPS:
@@ -367,6 +386,7 @@ def _unit_direction(primary, fallback):
 
 
 def _place_edge(output, driving, reference, child, parent, target_length):
+    """drivingの方向と指定した骨長を使い、親から子の3D位置を決める。"""
     direction = _unit_direction(
         driving[child] - driving[parent],
         reference[child] - reference[parent],
@@ -383,12 +403,15 @@ def retarget_mhr70(reference, driving, size_reference="torso",
                    forearm_scale=1.0, thigh_scale=1.0,
                    shin_scale=1.0, reference_head_top=None,
                    driving_head_top=None):
-    """Combine reference 3D bone lengths with driving 3D directions."""
+    """referenceの3D骨長とdrivingの3D方向・ポーズを合成する。"""
+    # 入力をfloat64へ統一し、全関節が期待どおり70点あることを先に保証する。
     reference = np.asarray(reference, dtype=np.float64)
     driving = np.asarray(driving, dtype=np.float64)
     if reference.shape != (MHR70_COUNT, 3) or driving.shape != (MHR70_COUNT, 3):
         raise ValueError("reference and driving joints must both have shape (70, 3)")
 
+    # referenceの骨長を比率化し、drivingの身体サイズへ展開する。
+    # target_unitは生成後の基準サイズで、uniform_scaleだけを追加適用した値。
     ref_unit = body_unit(reference, size_reference, reference_head_top)
     drv_unit = body_unit(driving, size_reference, driving_head_top)
     base_scale = drv_unit / ref_unit * float(uniform_scale)
@@ -400,11 +423,13 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     }
     reference_proportions = normalized_body_proportions(reference, ref_unit)
 
+    # drivingを土台にすると、明示的に再配置しない補助点も元の位置を維持できる。
     output = driving.copy()
+    # 人物の配置はdriving基準なので、腰中心そのものは移動させない。
     root = hip_center(driving)
 
-    # Build the central body explicitly. This makes widths exact instead of
-    # treating the left and right halves as unrelated bones.
+    # 腰: 左右を別々の骨として伸ばすと中心がずれるため、腰中心から対称に配置する。
+    # 向きはdriving、幅はreferenceの体型比率を使用する。
     hip_axis = _unit_direction(
         driving[LEFT_HIP] - driving[RIGHT_HIP],
         reference[LEFT_HIP] - reference[RIGHT_HIP],
@@ -416,6 +441,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     output[LEFT_HIP] = root + hip_axis * hip_width * 0.5
     output[RIGHT_HIP] = root - hip_axis * hip_width * 0.5
 
+    # 胴体: 腰中心→首の向きはdriving、長さはreferenceから移す。
     torso_direction = _unit_direction(
         driving[NECK] - hip_center(driving),
         reference[NECK] - hip_center(reference),
@@ -426,6 +452,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     )
     output[NECK] = root + torso_direction * torso_length
 
+    # 肩: 左右を結ぶ軸の傾きはdriving、肩幅はreferenceから移す。
     shoulder_axis = _unit_direction(
         driving[LEFT_SHOULDER] - driving[RIGHT_SHOULDER],
         reference[LEFT_SHOULDER] - reference[RIGHT_SHOULDER],
@@ -434,6 +461,8 @@ def retarget_mhr70(reference, driving, size_reference="torso",
         reference_proportions["shoulder_width"] * target_unit
         * float(shoulder_width_scale)
     )
+    # 両肩の中点を首へ固定すると「肩を落とす／すくめる」ポーズが消える。
+    # そこで肩中央の首に対する上下・奥行きをdrivingの身体サイズ比で維持する。
     driving_shoulder_offset = shoulder_center(driving) - driving[NECK]
     output_shoulder_center = (
         output[NECK]
@@ -444,6 +473,8 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     output[RIGHT_SHOULDER] = (
         output_shoulder_center - shoulder_axis * shoulder_width * 0.5)
 
+    # 腕と脚: 各ボーンの向きはdriving、長さはreference比率×部位倍率を使う。
+    # 大分類のarm/leg倍率と、上腕・前腕・腿・脛の詳細倍率は乗算する。
     edge_scales = (
         (LEFT_ELBOW, LEFT_SHOULDER,
          float(arm_scale) * float(upper_arm_scale)),
@@ -468,6 +499,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
             length_ratios[child] * target_unit * part_scale,
         )
 
+    # 足: 足首を親に持つつま先・かかとのみを、driving方向へ再配置する。
     for child, parent, _ in BODY_EDGES:
         if parent not in (LEFT_ANKLE, RIGHT_ANKLE):
             continue
@@ -476,8 +508,8 @@ def retarget_mhr70(reference, driving, size_reference="torso",
             length_ratios[child] * target_unit * float(leg_scale),
         )
 
-    # Shoulder center -> nose is a direct reference proportion. Anchoring it
-    # explicitly avoids accumulating shoulder/neck estimation offsets.
+    # 頭: 肩中央→鼻をreferenceの直接的な体型比率として保証する。
+    # 首や肩の複数ボーンを順に足す方式にしないことで、推定誤差の累積を避ける。
     driving_shoulders = shoulder_center(driving)
     reference_shoulders = shoulder_center(reference)
     nose_direction = _unit_direction(
@@ -490,6 +522,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     )
     output[NOSE] = shoulder_center(output) + nose_direction * neck_length
 
+    # 目と耳: 鼻から外側へ、drivingの顔向きとreferenceの骨長で配置する。
     for child, parent in (
             (LEFT_EYE, NOSE), (RIGHT_EYE, NOSE),
             (LEFT_EAR, LEFT_EYE), (RIGHT_EAR, RIGHT_EYE)):
@@ -498,6 +531,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
             length_ratios[child] * target_unit * float(head_scale),
         )
 
+    # 手: 手首を起点に各指を根元から指先へ順番に配置する。
     for child, parent, _ in HAND_EDGES:
         _place_edge(
             output, driving, reference, child, parent,
@@ -505,6 +539,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
             * float(arm_scale) * float(hand_scale),
         )
 
+    # 呼び出し側で計算根拠を確認できるよう、使用単位と生成前後の比率を返す。
     details = {
         "reference_unit": ref_unit,
         "driving_unit": drv_unit,
@@ -518,6 +553,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
 
 
 def extract_camera(output):
+    """SAM3D_OUTPUTから透視投影用のカメラ移動量と焦点距離を取り出す。"""
     if not isinstance(output, dict):
         raise ValueError("driving SAM3D input must be a dictionary")
     raw = output.get("raw_output") or {}
@@ -542,11 +578,13 @@ def extract_camera(output):
 
 
 def project_mhr70(points, camera, focal_xy, width, height):
-    """Use SAM 3D Body's perspective-camera convention."""
+    """SAM 3D Bodyと同じ透視投影式で、MHR70を絶対ピクセル座標へ変換する。"""
+    # 関節は人物ローカル座標なので、まず推定されたカメラ移動量を加える。
     camera_points = np.asarray(points, dtype=np.float64) + camera[None, :]
     depth = camera_points[:, 2]
     valid = np.isfinite(camera_points).all(axis=1) & (depth > EPS)
     projected = np.zeros((len(points), 2), dtype=np.float64)
+    # 主点は画像中央。depthが0以下の点はカメラの後ろなので投影しない。
     projected[valid, 0] = (
         focal_xy[0] * camera_points[valid, 0] / depth[valid] + width * 0.5)
     projected[valid, 1] = (
@@ -555,7 +593,7 @@ def project_mhr70(points, camera, focal_xy, width, height):
 
 
 def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16):
-    """Fit valid projected points while preserving aspect ratio."""
+    """縦横比を維持したまま、有効な2D点をcanvas内へ収める。"""
     points = np.asarray(points, dtype=np.float64).copy()
     if mode == "off" or not np.any(valid):
         return points, 1.0
@@ -567,12 +605,14 @@ def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16)
     hi = subset.max(axis=0)
     if mode == "shrink_to_fit" and (
             lo[0] >= 0 and lo[1] >= 0 and hi[0] <= width and hi[1] <= height):
+        # すでに全点が収まっている場合は、位置やサイズを一切変えない。
         return points, 1.0
 
     max_margin = max(0.0, min(width, height) * 0.5 - 1.0)
     margin = min(max(float(margin), 0.0), max_margin)
     available = np.array([width - 2 * margin, height - 2 * margin], dtype=np.float64)
     span = np.maximum(hi - lo, EPS)
+    # 幅・高さのうち厳しい側に合わせ、同じ倍率をXY両方へ適用する。
     scale = float(np.min(available / span))
     if mode == "shrink_to_fit":
         scale = min(1.0, scale)
@@ -583,6 +623,7 @@ def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16)
 
 
 def _openpose_field(projected, valid, indices):
+    """MHR70の指定点を、OpenPoseの[x, y, confidence]配列へ並べ替える。"""
     out = np.zeros((len(indices), 3), dtype=np.float64)
     for output_index, mhr_index in enumerate(indices):
         if valid[mhr_index]:
@@ -593,7 +634,8 @@ def _openpose_field(projected, valid, indices):
 
 
 def to_pose_keypoint(projected, valid, width, height):
-    """Convert MHR70 body/hands to absolute-pixel OpenPose fields."""
+    """MHR70の体と手を、絶対ピクセル座標のPOSE_KEYPOINTへ変換する。"""
+    # MHR70からOpenPose互換の顔70点は復元できないため、固定長のconfidence 0で返す。
     person = {
         "pose_keypoints_2d": _openpose_field(
             projected, valid, COCO18_FROM_MHR70),
@@ -611,6 +653,7 @@ def to_pose_keypoint(projected, valid, width, height):
 
 
 def image_size(image):
+    """ComfyUIのIMAGEテンソルから、canvasに使う幅と高さを取得する。"""
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) < 3:
         raise ValueError("driving_image must be a ComfyUI IMAGE tensor")
