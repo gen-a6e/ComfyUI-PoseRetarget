@@ -410,12 +410,13 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     if reference.shape != (MHR70_COUNT, 3) or driving.shape != (MHR70_COUNT, 3):
         raise ValueError("reference and driving joints must both have shape (70, 3)")
 
-    # referenceの骨長を比率化し、drivingの身体サイズへ展開する。
-    # target_unitは生成後の基準サイズで、uniform_scaleだけを追加適用した値。
+    # referenceの骨長を比率化し、reference自身の身体サイズへ戻す。
+    # これにより出力骨長は「reference骨長 × 各種scale」となり、drivingからは
+    # 全体サイズではなく、3D方向・ポーズだけを受け取る。
     ref_unit = body_unit(reference, size_reference, reference_head_top)
     drv_unit = body_unit(driving, size_reference, driving_head_top)
-    base_scale = drv_unit / ref_unit * float(uniform_scale)
-    target_unit = drv_unit * float(uniform_scale)
+    base_scale = float(uniform_scale)
+    target_unit = ref_unit * base_scale
     length_ratios = {
         child: length / ref_unit
         for child, length in reference_lengths(
@@ -473,7 +474,8 @@ def retarget_mhr70(reference, driving, size_reference="torso",
     output[RIGHT_SHOULDER] = (
         output_shoulder_center - shoulder_axis * shoulder_width * 0.5)
 
-    # 腕と脚: 各ボーンの向きはdriving、長さはreference比率×部位倍率を使う。
+    # 腕と脚: 各ボーンの向きはdriving、長さはreference比率×reference_unit
+    # ×部位倍率を使う。
     # 大分類のarm/leg倍率と、上腕・前腕・腿・脛の詳細倍率は乗算する。
     edge_scales = (
         (LEFT_ELBOW, LEFT_SHOULDER,
@@ -544,6 +546,7 @@ def retarget_mhr70(reference, driving, size_reference="torso",
         "reference_unit": ref_unit,
         "driving_unit": drv_unit,
         "base_scale": base_scale,
+        "size_source": "reference",
         "size_reference": size_reference,
         "reference_proportions": reference_proportions,
         "generated_proportions": normalized_body_proportions(

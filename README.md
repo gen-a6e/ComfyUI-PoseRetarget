@@ -1,4 +1,4 @@
-# comfyui-pose-retarget
+# ComfyUI-PoseRetarget
 
 SAM 3D Bodyで推定した2つの3D骨格を組み合わせ、
 「reference画像の体型でdriving画像のポーズ」を取るOpenPose骨格を作るComfyUIノードです。
@@ -11,7 +11,7 @@ driving側のカメラと焦点距離で2Dへ透視投影します。横向き�
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
+git clone git@github.com:gen-a6e/ComfyUI-PoseRetarget.git
 ```
 
 このリポジトリ自体に追加の依存パッケージはありません（numpyはComfyUIに同梱）。
@@ -41,7 +41,7 @@ git clone git@github.com:gen-a6e/comfyui-pose-retarget.git
 
 | パラメータ | 既定 | 説明 |
 |---|---|---|
-| `size_reference` | torso | 画面内の人物サイズを合わせるための3D基準。torso / shoulder_width / body_height / head_to_heel |
+| `size_reference` | torso | referenceの骨長比率と、drivingの肩ポーズ比率を測る3D基準。torso / shoulder_width / body_height / head_to_heel |
 | `reference_symmetry` | average | averageは左右の推定誤差を平均化。offは左右それぞれの3D骨長をそのまま使用 |
 | `uniform_scale` | 1.0 | 腰中央を基準にした全身サイズ |
 | `leg_scale` | 1.0 | 脚と足の追加倍率 |
@@ -76,7 +76,8 @@ driving画像 ──────────────────────
 MHR70を変形・fitなしで直接投影した`driving_pose_keypoint`、処理内容を示す
 `report`の順です。
 
-referenceの各骨長は`size_reference`で正規化した比率としてdrivingへ転送します。
+referenceの各骨長は`size_reference`で正規化し、reference自身の基準サイズへ戻して転送します。
+そのため基本式は`出力骨長 = reference骨長比率 × reference_unit × uniform_scale × 部位別scale`で、各scaleが1.0ならreferenceの実際の3D骨長を維持します。drivingからは3D方向・ポーズを使用し、drivingの全体サイズは骨長の展開に使用しません。
 肩幅、腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。
 肩中央の首に対する上下・奥行きと左右の肩線の傾きはdrivingから維持します。
 `report`にはreferenceと生成後の主要な正規化比率を`reference->generated`形式で表示します。

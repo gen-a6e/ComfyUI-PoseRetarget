@@ -129,7 +129,7 @@ class SAM3DRetargetTests(unittest.TestCase):
             driving_direction / np.linalg.norm(driving_direction),
         )
 
-    def test_each_size_reference_matches_driving_unit_by_default(self):
+    def test_each_size_reference_matches_reference_unit_by_default(self):
         reference = skeleton()
         driving = skeleton() * 1.85
 
@@ -141,7 +141,7 @@ class SAM3DRetargetTests(unittest.TestCase):
 
                 self.assertAlmostEqual(
                     sr.body_unit(output, mode),
-                    details["driving_unit"],
+                    details["reference_unit"],
                     places=7,
                 )
 
@@ -174,13 +174,13 @@ class SAM3DRetargetTests(unittest.TestCase):
             sr.body_unit(body, "head_to_heel", head_top), expected, places=7
         )
 
-    def test_head_to_heel_normalizes_reference_to_driving_full_height(self):
+    def test_head_to_heel_keeps_reference_full_height(self):
         reference = skeleton()
         driving = skeleton() * 1.85
         reference_head_top = np.array((0.0, -1.02, 0.0))
         driving_head_top = reference_head_top * 1.85
 
-        _, details = sr.retarget_mhr70(
+        output, details = sr.retarget_mhr70(
             reference,
             driving,
             size_reference="head_to_heel",
@@ -189,9 +189,16 @@ class SAM3DRetargetTests(unittest.TestCase):
             driving_head_top=driving_head_top,
         )
 
-        self.assertAlmostEqual(details["base_scale"], 1.85, places=7)
+        self.assertAlmostEqual(details["base_scale"], 1.0, places=7)
         self.assertAlmostEqual(
             details["driving_unit"], details["reference_unit"] * 1.85,
+            places=7,
+        )
+        self.assertAlmostEqual(
+            np.linalg.norm(output[sr.LEFT_ELBOW] - output[sr.LEFT_SHOULDER]),
+            np.linalg.norm(
+                reference[sr.LEFT_ELBOW] - reference[sr.LEFT_SHOULDER]
+            ),
             places=7,
         )
 
@@ -254,7 +261,7 @@ class SAM3DRetargetTests(unittest.TestCase):
             output[sr.NOSE] - sr.shoulder_center(output))
         expected = (
             details["reference_proportions"]["shoulder_to_nose"]
-            * details["driving_unit"] * 1.25 * 0.80
+            * details["reference_unit"] * 1.25 * 0.80
         )
         self.assertAlmostEqual(actual, expected, places=7)
 
@@ -274,7 +281,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         expected = (
             sr.shoulder_center(driving) - driving[sr.NECK]
         ) / details["driving_unit"] * (
-            details["driving_unit"] * 1.25
+            details["reference_unit"] * 1.25
         )
         actual = sr.shoulder_center(output) - output[sr.NECK]
         np.testing.assert_allclose(actual, expected)
@@ -370,6 +377,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(driving_output[0]["canvas_width"], 384)
         self.assertEqual(driving_output[0]["canvas_height"], 512)
         self.assertIn("SAM 3D Body retargeted", report)
+        self.assertIn("size_source=reference", report)
         self.assertIn("Ratios reference->generated", report)
         self.assertIn("shoulder_to_nose:", report)
 

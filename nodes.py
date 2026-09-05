@@ -134,7 +134,7 @@ class SAM3DBodyPoseRetarget:
         driving_output = to_pose_keypoint(
             driving_projected, driving_valid, width, height)
 
-        # 5. 使用した単位、倍率、生成前後の体型比率を人が確認できる文字列にまとめる。
+        # 5. 使用した単位、サイズ源、倍率、生成前後の体型比率を確認できる文字列にまとめる。
         valid_depth = depth[valid]
         depth_note = "unavailable"
         if valid_depth.size:
@@ -148,6 +148,7 @@ class SAM3DBodyPoseRetarget:
             "SAM 3D Body retargeted one MHR70 skeleton; "
             f"reference_unit={details['reference_unit']:.3f} m; "
             f"driving_unit={details['driving_unit']:.3f} m; "
+            f"size_source={details['size_source']}; "
             f"scale={details['base_scale']:.3f}; "
             f"fit_scale={fit_scale:.3f}; "
             f"camera_depth={depth_note}."
