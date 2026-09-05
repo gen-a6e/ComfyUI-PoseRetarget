@@ -78,6 +78,7 @@ MHR70を変形・fitなしで直接投影した`driving_pose_keypoint`、処理�
 
 referenceの各骨長は`size_reference`で正規化した比率としてdrivingへ転送します。
 肩幅、腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。
+肩中央の首に対する上下・奥行きと左右の肩線の傾きはdrivingから維持します。
 `report`にはreferenceと生成後の主要な正規化比率を`reference->generated`形式で表示します。
 
 `head_to_heel`は、MHRの全308キーポイントから選んだ頭頂点に、頭・胴体・左右平均の脚・かかとの3D骨格長を加えた、姿勢に影響されにくい全身長を基準にします。この選択肢を使う場合は、全キーポイント出力に対応した`ComfyUI-SAM3DBody`でreferenceとdrivingを再実行してください。

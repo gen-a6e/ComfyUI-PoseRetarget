@@ -258,6 +258,46 @@ class SAM3DRetargetTests(unittest.TestCase):
         )
         self.assertAlmostEqual(actual, expected, places=7)
 
+    def test_lowered_shoulders_preserve_driving_offset_from_neck(self):
+        reference = skeleton()
+        driving = skeleton()
+        driving[sr.LEFT_SHOULDER] += (0.0, 0.18, 0.07)
+        driving[sr.RIGHT_SHOULDER] += (0.0, 0.18, 0.07)
+
+        output, details = sr.retarget_mhr70(
+            reference,
+            driving,
+            reference_symmetry="off",
+            uniform_scale=1.25,
+        )
+
+        expected = (
+            sr.shoulder_center(driving) - driving[sr.NECK]
+        ) / details["driving_unit"] * (
+            details["driving_unit"] * 1.25
+        )
+        actual = sr.shoulder_center(output) - output[sr.NECK]
+        np.testing.assert_allclose(actual, expected)
+
+    def test_preserves_driving_shoulder_tilt(self):
+        reference = skeleton()
+        driving = skeleton()
+        driving[sr.LEFT_SHOULDER] += (0.0, 0.14, 0.08)
+        driving[sr.RIGHT_SHOULDER] += (0.0, -0.06, -0.12)
+
+        output, _ = sr.retarget_mhr70(
+            reference, driving, reference_symmetry="off"
+        )
+
+        driving_axis = (
+            driving[sr.LEFT_SHOULDER] - driving[sr.RIGHT_SHOULDER]
+        )
+        output_axis = output[sr.LEFT_SHOULDER] - output[sr.RIGHT_SHOULDER]
+        np.testing.assert_allclose(
+            output_axis / np.linalg.norm(output_axis),
+            driving_axis / np.linalg.norm(driving_axis),
+        )
+
     def test_average_symmetry_equalizes_mirrored_bones(self):
         reference = skeleton()
         reference[sr.LEFT_ELBOW] = reference[sr.LEFT_SHOULDER] + (0.50, 0.0, 0.0)

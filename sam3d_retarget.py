@@ -434,10 +434,15 @@ def retarget_mhr70(reference, driving, size_reference="torso",
         reference_proportions["shoulder_width"] * target_unit
         * float(shoulder_width_scale)
     )
+    driving_shoulder_offset = shoulder_center(driving) - driving[NECK]
+    output_shoulder_center = (
+        output[NECK]
+        + driving_shoulder_offset / drv_unit * target_unit
+    )
     output[LEFT_SHOULDER] = (
-        output[NECK] + shoulder_axis * shoulder_width * 0.5)
+        output_shoulder_center + shoulder_axis * shoulder_width * 0.5)
     output[RIGHT_SHOULDER] = (
-        output[NECK] - shoulder_axis * shoulder_width * 0.5)
+        output_shoulder_center - shoulder_axis * shoulder_width * 0.5)
 
     edge_scales = (
         (LEFT_ELBOW, LEFT_SHOULDER,
