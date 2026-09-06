@@ -63,13 +63,19 @@ def skeleton():
     return points
 
 
-def sam_output(points=None):
+def sam_output(points=None, keypoints_2d=None):
     body = skeleton() if points is None else points
+    camera = np.array([0.0, 0.0, 5.0])
+    if keypoints_2d is None:
+        keypoints_2d, _, _ = sr.project_mhr70(
+            body, camera, np.array([800.0, 800.0]), 384, 512
+        )
     return {
         "joints": body,
         "keypoints_3d_full": full_keypoints(body),
-        "camera": np.array([0.0, 0.0, 5.0]),
+        "camera": camera,
         "focal_length": np.array([800.0]),
+        "raw_output": {"pred_keypoints_2d": keypoints_2d},
     }
 
 
@@ -343,7 +349,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         node = node_class()
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
 
-        output, driving_output, report = node.run(
+        output, driving_output, report, raw_driving_output = node.run(
             sam_output(), sam_output(), image,
             "average",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -356,6 +362,8 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(len(person["hand_left_keypoints_2d"]), 21 * 3)
         self.assertEqual(driving_output[0]["canvas_width"], 384)
         self.assertEqual(driving_output[0]["canvas_height"], 512)
+        self.assertEqual(raw_driving_output[0]["canvas_width"], 384)
+        self.assertEqual(raw_driving_output[0]["canvas_height"], 512)
         self.assertIn("SAM 3D Body retargeted", report)
         self.assertIn("size_source=reference", report)
         self.assertIn("reference_height=", report)
@@ -372,7 +380,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         reference["keypoints_3d_full"] = full_keypoints()
         driving["keypoints_3d_full"] = full_keypoints()
 
-        _, _, report = node.run(
+        _, _, report, _ = node.run(
             reference, driving, image,
             "off",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -390,7 +398,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         driving_points[sr.NOSE] = (0.45, -0.70, 0.25)
         driving_sam3d = sam_output(driving_points)
 
-        _, driving_output, _ = node.run(
+        _, driving_output, _, _ = node.run(
             sam_output(), driving_sam3d, image,
             "off",
             1.4, 0.8, 1.3, 0.7, 1.2,
@@ -408,6 +416,44 @@ class SAM3DRetargetTests(unittest.TestCase):
         np.testing.assert_allclose(body[0, :2], expected[sr.NOSE])
         self.assertEqual(body[0, 2], float(valid[sr.NOSE]))
 
+    def test_raw_driving_output_uses_sam_internal_2d_and_reports_hand_delta(self):
+        node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
+        node = node_class()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        driving_points = skeleton()
+        reprojected, _, _ = sr.project_mhr70(
+            driving_points,
+            np.array([0.0, 0.0, 5.0]),
+            np.array([800.0, 800.0]),
+            384,
+            512,
+        )
+        raw_2d = reprojected.copy()
+        raw_2d[list(sr.RIGHT_HAND_FROM_MHR70)] += np.array([3.0, 4.0])
+        driving_sam3d = sam_output(driving_points, raw_2d)
+
+        _, _, report, raw_output = node.run(
+            sam_output(), driving_sam3d, image,
+            "off",
+            1.0, 1.0, 1.0, 1.0, 1.0,
+            "off", 16,
+        )
+
+        hand = np.asarray(
+            raw_output[0]["people"][0]["hand_right_keypoints_2d"]
+        ).reshape(21, 3)
+        np.testing.assert_allclose(
+            hand[:, :2], raw_2d[list(sr.RIGHT_HAND_FROM_MHR70)]
+        )
+        self.assertIn(
+            "right_hand_raw2d_vs_reprojected: rms=5.000 px, max=5.000 px",
+            report,
+        )
+        self.assertIn(
+            "left_hand_raw2d_vs_reprojected: rms=0.000 px, max=0.000 px",
+            report,
+        )
+
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
         package = load_package()
         self.assertEqual(
@@ -423,7 +469,12 @@ class SAM3DRetargetTests(unittest.TestCase):
         node_class = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         self.assertEqual(
             node_class.RETURN_NAMES,
-            ("pose_keypoint", "driving_pose_keypoint", "report"),
+            (
+                "pose_keypoint",
+                "driving_pose_keypoint",
+                "report",
+                "sam_raw_driving_pose_keypoint",
+            ),
         )
         for name in (
                 "torso_scale", "shoulder_width_scale", "hip_width_scale",
@@ -434,6 +485,10 @@ class SAM3DRetargetTests(unittest.TestCase):
     def test_invalid_joint_shape_has_actionable_error(self):
         with self.assertRaisesRegex(ValueError, r"shape \(70, 3\)"):
             sr.extract_mhr70({"joints": np.zeros((17, 3))})
+
+    def test_missing_raw_2d_has_actionable_error(self):
+        with self.assertRaisesRegex(ValueError, "rerun SAM 3D Body"):
+            sr.extract_mhr70_2d({})
 
 
 if __name__ == "__main__":

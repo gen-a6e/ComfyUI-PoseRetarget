@@ -193,6 +193,34 @@ def extract_mhr70(output):
     return points
 
 
+def extract_mhr70_2d(output):
+    """SAM内部で投影済みのMHR70 XY座標と、有効点maskを取り出す。"""
+    if not isinstance(output, dict):
+        raise ValueError("SAM3D input must be a SAM3D_OUTPUT dictionary")
+    value = output.get("keypoints_2d")
+    if value is None:
+        raw = output.get("raw_output") or {}
+        value = raw.get("pred_keypoints_2d")
+    if value is None:
+        raise ValueError(
+            "SAM3D output is missing raw_output.pred_keypoints_2d; "
+            "rerun SAM 3D Body: Process Image"
+        )
+
+    points = as_numpy(value, "pred_keypoints_2d")
+    while points.ndim > 2 and points.shape[0] == 1:
+        points = points[0]
+    if points.ndim != 2 or points.shape[0] < MHR70_COUNT or points.shape[1] < 2:
+        raise ValueError(
+            "SAM3D pred_keypoints_2d must have shape (70, 2); "
+            f"received {points.shape}"
+        )
+    points = points[:MHR70_COUNT, :2].copy()
+    valid = np.all(np.isfinite(points), axis=1)
+    points[~valid] = 0.0
+    return points, valid
+
+
 def extract_head_top(output, mhr70=None):
     """MHR全308点から頭頂点を選び、その3D座標と元の番号を返す。"""
     if not isinstance(output, dict):
@@ -561,6 +589,25 @@ def project_mhr70(points, camera, focal_xy, width, height):
     projected[valid, 1] = (
         focal_xy[1] * camera_points[valid, 1] / depth[valid] + height * 0.5)
     return projected, valid, depth
+
+
+def projected_difference(first, first_valid, second, second_valid, indices):
+    """指定した関節群における2組のXY座標差をピクセル単位で集計する。"""
+    first = np.asarray(first, dtype=np.float64)
+    second = np.asarray(second, dtype=np.float64)
+    first_valid = np.asarray(first_valid, dtype=bool)
+    second_valid = np.asarray(second_valid, dtype=bool)
+    indices = np.asarray(indices, dtype=np.int64)
+    valid = first_valid[indices] & second_valid[indices]
+    if not np.any(valid):
+        return {"count": 0, "rms": None, "max": None}
+    delta = first[indices[valid]] - second[indices[valid]]
+    distances = np.linalg.norm(delta, axis=1)
+    return {
+        "count": int(len(distances)),
+        "rms": float(np.sqrt(np.mean(distances ** 2))),
+        "max": float(np.max(distances)),
+    }
 
 
 def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16):

@@ -73,7 +73,14 @@ driving画像 ──────────────────────
 
 出力は、reference体型とdrivingポーズを合成した`pose_keypoint`、drivingの
 MHR70を変形・fitなしで直接投影した`driving_pose_keypoint`、処理内容を示す
-`report`の順です。
+`report`、SAM内部で投影済みの2D点をそのまま変換した
+`sam_raw_driving_pose_keypoint`の順です。
+
+`driving_pose_keypoint`と`sam_raw_driving_pose_keypoint`は、SAMの3D手座標を
+こちらで再投影した結果と、SAM内部の2D投影結果を比較する診断用です。`report`には
+左右の手について`raw2d_vs_reprojected`のRMS差・最大差をピクセル単位で表示します。
+raw側だけが正しい場合は再投影処理、両方が同じ場合はSAMのMHR70手座標より前段を
+調査できます。
 
 referenceの各骨長は正規化せず、SAM 3D Bodyが推定した3D距離を直接転送します。
 基本式は`出力骨長 = reference骨長 × uniform_scale × 部位別scale`です。各scaleが1.0ならreferenceの3D骨長を維持し、drivingからは3D方向・ポーズを使用します。

@@ -2,10 +2,14 @@ from .sam3d_retarget import (
     extract_camera,
     extract_head_top,
     extract_mhr70,
+    extract_mhr70_2d,
     estimated_height,
     fit_projected,
     image_size,
     project_mhr70,
+    projected_difference,
+    LEFT_HAND_FROM_MHR70,
+    RIGHT_HAND_FROM_MHR70,
     retarget_mhr70,
     to_pose_keypoint,
 )
@@ -60,8 +64,15 @@ class SAM3DBodyPoseRetarget:
             }
         }
 
-    RETURN_TYPES = ("POSE_KEYPOINT", "POSE_KEYPOINT", "STRING")
-    RETURN_NAMES = ("pose_keypoint", "driving_pose_keypoint", "report")
+    RETURN_TYPES = (
+        "POSE_KEYPOINT", "POSE_KEYPOINT", "STRING", "POSE_KEYPOINT"
+    )
+    RETURN_NAMES = (
+        "pose_keypoint",
+        "driving_pose_keypoint",
+        "report",
+        "sam_raw_driving_pose_keypoint",
+    )
     FUNCTION = "run"
     CATEGORY = "pose-retarget"
 
@@ -125,6 +136,29 @@ class SAM3DBodyPoseRetarget:
         driving_output = to_pose_keypoint(
             driving_projected, driving_valid, width, height)
 
+        # SAM内部で計算済みの2D点も再投影せず出力する。3D再投影との差を診断する用途。
+        raw_driving_projected, raw_driving_valid = extract_mhr70_2d(
+            driving_sam3d
+        )
+        raw_driving_valid &= driving_valid
+        raw_driving_output = to_pose_keypoint(
+            raw_driving_projected, raw_driving_valid, width, height
+        )
+        right_hand_difference = projected_difference(
+            raw_driving_projected,
+            raw_driving_valid,
+            driving_projected,
+            driving_valid,
+            RIGHT_HAND_FROM_MHR70,
+        )
+        left_hand_difference = projected_difference(
+            raw_driving_projected,
+            raw_driving_valid,
+            driving_projected,
+            driving_valid,
+            LEFT_HAND_FROM_MHR70,
+        )
+
         # 5. 概算身長、倍率、生成前後の実骨長を確認できる文字列にまとめる。
         valid_depth = depth[valid]
         depth_note = "unavailable"
@@ -145,6 +179,21 @@ class SAM3DBodyPoseRetarget:
             f"camera_depth={depth_note}."
             f" Lengths reference->generated (m): {length_note}."
         )
+        for side, difference in (
+            ("right", right_hand_difference),
+            ("left", left_hand_difference),
+        ):
+            if difference["count"]:
+                report += (
+                    f" {side}_hand_raw2d_vs_reprojected: "
+                    f"rms={difference['rms']:.3f} px, "
+                    f"max={difference['max']:.3f} px, "
+                    f"points={difference['count']}."
+                )
+            else:
+                report += (
+                    f" {side}_hand_raw2d_vs_reprojected: unavailable."
+                )
         # 実データ確認用に、頭頂として選ばれた308点中の番号も残す。
         report += (
             " Head-top full-MHR indices "
@@ -166,8 +215,8 @@ class SAM3DBodyPoseRetarget:
             "face_keypoints_2d is zero-confidence."
         )
 
-        # 出力順は、合成結果・元driving・report。ComfyUIのソケット順と一致させる。
-        return (output, driving_output, report)
+        # 既存3出力の順序を維持し、SAM内部2Dの診断出力を末尾へ追加する。
+        return (output, driving_output, report, raw_driving_output)
 
 
 NODE_CLASS_MAPPINGS = {
