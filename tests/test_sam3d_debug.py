@@ -38,7 +38,7 @@ class DebugTests(unittest.TestCase):
         np.testing.assert_array_equal(points[tip], data["joint_coords"][126])
         np.testing.assert_array_equal(points[:70], data["joints"])
         # 全身では親が範囲外だった首→上部脊椎も結び、rootは自分と結ばない。
-        _, names, colors, edges, _ = debug.debug_geometry(data, show_rig=True, rig_scope="all")
+        _, names, colors, edges, _ = debug.debug_geometry(data, show_rig=True, rig_scope="all", show_height=False)
         rig_edges = [(a, b) for a, b in edges if names[a].startswith("R")]
         self.assertEqual(len(rig_edges), 126)
         self.assertEqual(len([i for i in colors if names[i].startswith("R")]), 127)
@@ -67,6 +67,7 @@ class DebugTests(unittest.TestCase):
         data = sam_output()
         rig = np.tile([0., 0., -10.], (127, 1))
         rig[113], rig[126] = (0., -.2, 0.), (0., -1., 0.)
+        data.pop("joint_coords")
         data["raw_output"]["pred_joint_coords"] = rig[None]
         opts = options_off()
         source = np.zeros((1, 512, 384, 3), np.float32)
@@ -79,15 +80,15 @@ class DebugTests(unittest.TestCase):
     def test_missing_or_unusable_rig_does_not_change_existing_overlays(self):
         data = mesh_sample()
         source = np.zeros((1, 512, 384, 3), np.float32)
-        expected, _ = debug.render_debug(data, source)
+        expected, _ = debug.render_debug(data, source, show_height=False)
         for value in (None, np.zeros((126, 3)), np.zeros((128, 3)),
                       np.zeros((2, 127, 3)), np.full((127, 3), np.nan), "invalid"):
             with self.subTest(shape=np.shape(value)):
                 data["joint_coords"] = value
-                result, report = debug.render_debug(data, source, show_rig=True)
+                result, report = debug.render_debug(data, source, show_rig=True, show_height=False)
                 np.testing.assert_array_equal(result, expected)
                 self.assertIn("WARNING: internal rig unavailable", report)
-                disabled, report = debug.render_debug(data, source, show_rig=False)
+                disabled, report = debug.render_debug(data, source, show_rig=False, show_height=False)
                 np.testing.assert_array_equal(disabled, expected)
                 self.assertNotIn("internal rig unavailable", report)
 
@@ -96,13 +97,28 @@ class DebugTests(unittest.TestCase):
         data["joint_coords"] = np.zeros((127, 3))
         points, names, colors, edges, _ = debug.debug_geometry(
             data, show_rig=True, rig_scope="all", show_head_candidates=True)
-        landmark = names.index("126: head_candidate")
+        landmark = names.index("126: dense_head_landmark")
         rig_tip = names.index("R126: c_head_null")
         self.assertNotEqual(landmark, rig_tip)
         self.assertIn(landmark, colors)
         self.assertIn(rig_tip, colors)
         self.assertIn((rig_tip, names.index("R113: c_head")), edges)
         np.testing.assert_array_equal(points[landmark], data["keypoints_3d_full"][126])
+
+    def test_height_only_displays_exact_measurement_path_and_no_duplicate_r126(self):
+        data = sam_output()
+        del data["keypoints_3d_full"]
+        _, names, colors, edges, notes = debug.debug_geometry(
+            data, show_body=False, show_face=False, show_left_hand=False,
+            show_right_hand=False, show_height=True)
+        top = names.index("R126: c_head_null")
+        self.assertEqual(set(colors), {top, 69, 71, 9, 11, 13, 17, 10, 12, 14, 20})
+        self.assertEqual({frozenset(edge) for edge in edges}, {
+            frozenset(edge) for edge in ((top,69), (69,71), (9,11), (11,13), (13,17),
+                                        (10,12), (12,14), (14,20))})
+        self.assertTrue(any("head_top_source=R126" in note for note in notes))
+        _, names, colors, _, _ = debug.debug_geometry(data, show_rig=True, show_height=True)
+        self.assertEqual(sum(names[i] == "R126: c_head_null" for i in colors), 1)
 
     def test_mesh_and_joint_overlay_share_pixels_without_transforming_input(self):
         data = mesh_sample()
@@ -156,17 +172,17 @@ class DebugTests(unittest.TestCase):
         self.assertEqual(names[69], "69: neck")
         self.assertEqual(names[24], "24: right_thumb_third_joint")
         self.assertEqual(names[45], "45: left_thumb_third_joint")
-        self.assertIn("184: selected_head_top", names[72])
+        self.assertEqual("R126: c_head_null", names[72])
         self.assertEqual(len(points), 73)
 
     def test_group_toggles_and_missing_optional_data(self):
         data = sam_output()
-        data.pop("keypoints_3d_full")
+        data.pop("joint_coords")
         opts = options_off()
         opts.update(show_left_hand=True, show_height=True)
         image, report = debug.render_debug(data, np.zeros((1, 512, 384, 3)), **opts)
         self.assertTrue(image.any())
-        self.assertIn("height/head candidates unavailable", report)
+        self.assertIn("height unavailable", report)
         self.assertIn("mesh unavailable", report)
         self.assertNotIn("21: right_thumb_tip |", report)
         self.assertIn("42: left_thumb_tip |", report)
@@ -192,7 +208,7 @@ class DebugTests(unittest.TestCase):
         self.assertIsInstance(result, torch.Tensor)
         self.assertEqual(result.dtype, torch.float32)
         self.assertEqual(tuple(result.shape), (1, 512, 384, 3))
-        self.assertIn("307: head_candidate", report)
+        self.assertIn("307: dense_head_landmark", report)
         self.assertTrue(torch.isfinite(result).all())
         inputs = list(node.INPUT_TYPES()["required"])
         self.assertEqual(inputs[-2:], ["show_rig", "rig_scope"])

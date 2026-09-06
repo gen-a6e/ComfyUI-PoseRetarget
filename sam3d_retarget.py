@@ -227,61 +227,28 @@ def extract_mhr70_2d(output):
     return points, valid
 
 
-def extract_head_top(output, mhr70=None):
-    """MHR全308点から頭頂点を選び、その3D座標と元の番号を返す。"""
+def extract_head_top(output):
+    """内部リグMHR127のR126（c_head_null）を、身長計測の頭頂点として取り出す。"""
     if not isinstance(output, dict):
         raise ValueError("SAM3D input must be a SAM3D_OUTPUT dictionary")
-    value = output.get("keypoints_3d_full")
+    value = output.get("joint_coords")
     if value is None:
-        raw = output.get("raw_output") or {}
-        value = raw.get("pred_keypoints_3d_full")
+        value = (output.get("raw_output") or {}).get("pred_joint_coords")
     if value is None:
         raise ValueError(
-            "height reporting requires full MHR keypoints from the updated "
-            "ComfyUI-SAM3DBody; rerun SAM 3D Body: Process Image"
+            "height reporting requires MHR127 joint_coords (R126 c_head_null); "
+            "rerun SAM 3D Body: Process Image"
         )
-
-    points = as_numpy(value, "full MHR keypoints")
+    points = as_numpy(value, "joint_coords")
     while points.ndim > 2 and points.shape[0] == 1:
         points = points[0]
-    if (
-        points.ndim != 2
-        or points.shape[0] < MHR_KEYPOINT_COUNT
-        or points.shape[1] < 3
-    ):
-        raise ValueError(
-            "SAM3D full MHR keypoints must have shape (308, 3); "
-            f"received {points.shape}"
-        )
-    points = points[:MHR_KEYPOINT_COUNT, :3]
-
-    body = extract_mhr70(output) if mhr70 is None else np.asarray(
-        mhr70, dtype=np.float64
-    )
-    if body.shape != (MHR70_COUNT, 3):
-        raise ValueError("mhr70 must have shape (70, 3)")
-
-    # 70〜307番は密な頭部・顔ランドマーク。首から顔中心へ向かう軸上で最も遠い点を
-    # 頭頂とする。腕の点を候補に含めないため、手を上げても頭頂と誤認しない。
-    # 頭そのものの軸を使うので、首を傾けた姿勢にも追従する。
-    head_center = np.mean(
-        body[[NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR]], axis=0
-    )
-    head_axis = head_center - body[NECK]
-    axis_length = np.linalg.norm(head_axis)
-    if not np.isfinite(axis_length) or axis_length <= EPS:
-        raise ValueError("SAM3D skeleton has no usable neck-to-head direction")
-    head_axis /= axis_length
-
-    dense = points[MHR70_COUNT:]
-    valid = np.all(np.isfinite(dense), axis=1)
-    dense = dense[valid]
-    dense_indices = np.arange(MHR70_COUNT, MHR_KEYPOINT_COUNT)[valid]
-    if not dense.size or np.max(np.ptp(dense, axis=0)) <= EPS:
-        raise ValueError("SAM3D full MHR head keypoints are empty")
-
-    selected = int(np.argmax((dense - body[NECK]) @ head_axis))
-    return dense[selected].copy(), int(dense_indices[selected])
+    if points.shape != (127, 3):
+        raise ValueError(f"SAM3D joint_coords must have shape (127, 3); received {points.shape}")
+    # 単位・軸の変換はProcess Image側で済んでいる。全308点へはフォールバックしない。
+    head = points[126]
+    if not np.isfinite(head).all():
+        raise ValueError("SAM3D R126 c_head_null contains non-finite coordinates")
+    return head.copy(), 126
 
 
 def hip_center(points):
@@ -301,31 +268,26 @@ def _edge_delta(points, child, parent):
 
 
 def estimated_height(points, head_top):
-    """頭頂からかかとまでの、姿勢変化に強い概算3D身長を返す。"""
-    # 直立時の上下差ではなく骨の長さを加算するため、屈伸や前屈でも縮みにくい。
-    torso = np.linalg.norm(points[NECK] - hip_center(points))
-    body_height = (
-        torso
-        + np.linalg.norm(points[NOSE] - shoulder_center(points))
-        + 0.5 * (
-            np.linalg.norm(points[LEFT_KNEE] - points[LEFT_HIP])
-            + np.linalg.norm(points[RIGHT_KNEE] - points[RIGHT_HIP]))
-        + 0.5 * (
-            np.linalg.norm(points[LEFT_ANKLE] - points[LEFT_KNEE])
-            + np.linalg.norm(points[RIGHT_ANKLE] - points[RIGHT_KNEE]))
-    )
-    # body_heightに頭頂→鼻と、左右平均の足首→かかとを加えて全身長にする。
+    """R126→首→腰中央と、左右平均の脚→かかとの3D距離による概算身長。"""
+    points = np.asarray(points, dtype=np.float64)
+    if points.shape != (MHR70_COUNT, 3):
+        raise ValueError("height measurement requires MHR70 points with shape (70, 3)")
     head_top = np.asarray(head_top, dtype=np.float64).reshape(-1)
-    if head_top.size < 3 or not np.all(np.isfinite(head_top[:3])):
+    if head_top.size != 3 or not np.all(np.isfinite(head_top)):
         raise ValueError("head_top must contain three finite coordinates")
-    height = (
-        body_height
-        + np.linalg.norm(head_top[:3] - points[NOSE])
-        + 0.5 * (
-            np.linalg.norm(points[LEFT_HEEL] - points[LEFT_ANKLE])
-            + np.linalg.norm(points[RIGHT_HEEL] - points[RIGHT_ANKLE])
+    # 鼻・肩中央は経由しない。腰中央→股関節の横方向の距離も身長には足さない。
+    head_neck = np.linalg.norm(head_top - points[NECK])
+    torso = np.linalg.norm(points[NECK] - hip_center(points))
+    leg_lengths = []
+    for hip, knee, ankle, heel in (
+            (LEFT_HIP, LEFT_KNEE, LEFT_ANKLE, LEFT_HEEL),
+            (RIGHT_HIP, RIGHT_KNEE, RIGHT_ANKLE, RIGHT_HEEL)):
+        leg_lengths.append(
+            np.linalg.norm(points[knee] - points[hip])
+            + np.linalg.norm(points[ankle] - points[knee])
+            + np.linalg.norm(points[heel] - points[ankle])
         )
-    )
+    height = head_neck + torso + 0.5 * sum(leg_lengths)
     if not np.isfinite(height) or height <= EPS:
         raise ValueError("SAM3D skeleton has no usable estimated height")
     return float(height)

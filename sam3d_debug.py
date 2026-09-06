@@ -128,42 +128,33 @@ def debug_geometry(mesh_data, show_body=True, show_face=True, show_left_hand=Tru
                          (6, (55, 120, 255)), (0, (65, 240, 100))):
         if index in colors:
             colors[index] = color
-    if show_body or show_height:
+    if show_body:
         colors.update({70: (255, 230, 70), 71: (180, 130, 255)})
     edges = [(child, 71 if parent is None else parent)
              for child, parent, _ in sr.RETARGET_EDGES]
     # 幅と、実際にマージで使う肩中央→鼻・首→肩中央も明示する。
     edges += [(5, 6), (9, 10), (69, 70), (70, 0)]
     notes = []
-    if show_height or show_head_candidates:
+    if show_head_candidates:
+        # widget名は既存ワークフロー互換で維持するが、点の選択や身長計算には使わない。
         try:
-            head, index = sr.extract_head_top(mesh_data, body)
-            selected = len(points)
-            points.append(head)
-            names.append(f"{index}: selected_head_top (estimated)")
-            colors[selected] = COLORS["height"]
-            if show_height:
-                height_ids = (0, 9, 10, 11, 12, 13, 14, 17, 20, 69)
-                for i in height_ids:
-                    colors.setdefault(i, COLORS["height"])
-                edges.append((0, selected))
-                notes.append(f"estimated_height={sr.estimated_height(body, head):.3f} m; "
-                             f"selected_head_top_full_index={index}")
-            if show_head_candidates:
-                full = mesh_data.get("keypoints_3d_full")
-                if full is None:
-                    full = (mesh_data.get("raw_output") or {}).get("pred_keypoints_3d_full")
-                full = sr.as_numpy(full, "full keypoints")
-                while full.ndim > 2 and full.shape[0] == 1:
-                    full = full[0]
-                full = full[:308, :3]
-                for i in range(70, 308):
-                    if i != index and np.isfinite(full[i]).all():
-                        colors[len(points)] = (160, 170, 110)
-                        points.append(full[i])
-                        names.append(f"{i}: head_candidate")
+            full = mesh_data.get("keypoints_3d_full")
+            if full is None:
+                full = (mesh_data.get("raw_output") or {}).get("pred_keypoints_3d_full")
+            full = sr.as_numpy(full, "full head landmarks")
+            while full.ndim > 2 and full.shape[0] == 1:
+                full = full[0]
+            if full.ndim != 2 or full.shape[0] < 308 or full.shape[1] < 3:
+                raise ValueError("full head landmarks must have shape (308, 3)")
+            full = full[:308, :3]
+            for i in range(70, 308):
+                if np.isfinite(full[i]).all():
+                    colors[len(points)] = (160, 170, 110)
+                    points.append(full[i])
+                    names.append(f"{i}: dense_head_landmark")
+            notes.append("Dense head landmarks are display-only; height uses R126.")
         except ValueError as exc:
-            notes.append(f"WARNING: height/head candidates unavailable: {exc}")
+            notes.append(f"WARNING: dense head landmarks unavailable: {exc}")
     if show_rig:
         try:
             value = mesh_data.get("joint_coords")
@@ -191,8 +182,37 @@ def debug_geometry(mesh_data, show_body=True, show_face=True, show_left_hand=Tru
             notes.extend((
                 f"internal_rig=MHR127; rig_scope={rig_scope}; selected_rig_points={len(indices)}",
                 "R=internal rig index, not MHR keypoint index; diamond markers, cyan lines.",
-                "R113 c_head=orange; R126 c_head_null=white; anatomical head-top identity unverified.",
+                "R113 c_head=orange; R126 c_head_null=white (height head-top reference).",
             ))
+    # 通常骨格の表示を先に確定し、身長表示だけONのときに腰幅などを復活させない。
+    edges = [(a, b) for a, b in edges if a in colors and b in colors]
+    if show_height:
+        try:
+            head, _ = sr.extract_head_top(mesh_data)
+            height = sr.estimated_height(body, head)
+            # リグ表示がONなら既存のR126を共有し、マーカー・ラベルを二重に描かない。
+            label = "R126: c_head_null"
+            if label in names:
+                selected = names.index(label)
+            else:
+                selected = len(points)
+                points.append(head)
+                names.append(label)
+            colors[selected] = RIG_HIGHLIGHTS[RIG_HEAD_NULL]
+            height_ids = (9, 10, 11, 12, 13, 14, 17, 20, 69, 71)
+            for i in height_ids:
+                colors.setdefault(i, COLORS["height"])
+            edges.extend(((selected, 69), (69, 71), (9, 11), (11, 13), (13, 17),
+                          (10, 12), (12, 14), (14, 20)))
+            notes.append(f"estimated_height={height:.3f} m; head_top_source=R126 c_head_null; "
+                         "path=R126->69->H + mean(9->11->13->17, 10->12->14->20)")
+        except ValueError as exc:
+            notes.append(f"WARNING: height unavailable: {exc}")
+    # 身長経路と通常骨格で共有する線は一度だけ描く。
+    unique_edges = {}
+    for a, b in edges:
+        unique_edges.setdefault(tuple(sorted((a, b))), (a, b))
+    edges = list(unique_edges.values())
     edges = [(a, b) for a, b in edges if a in colors and b in colors]
     return np.asarray(points), names, colors, edges, notes
 
@@ -328,7 +348,7 @@ def render_debug(mesh_data, image, mesh_opacity=0.35, show_mesh=True,
         "Input SAM skeleton only; no retarget, no fit. Use the original inference image.",
         "Joints/lines are x-ray overlays (not mesh-occluded). L/R are subject's sides.",
         "Red=69 neck; blue=5/6 shoulders; green=0 nose; yellow=S shoulder center; violet=H hip center.",
-        "Head top is a selected estimate, not a verified anatomical landmark.",
+        "Height uses R126 c_head_null and 3D segment lengths; not a measured standing height.",
         f"visible_points={len(visible)}/{len(colors)}; canvas={w}x{h}",
         "point | pixel_x pixel_y | estimated_camera_z | visibility",
     ]

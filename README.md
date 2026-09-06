@@ -89,9 +89,22 @@ referenceの各骨長は正規化せず、SAM 3D Bodyが推定した3D距離を�
 canvas fitの範囲計算は、実際に出力するBODY18と左右HAND21の有効点だけを対象にします。描画しないつま先・かかと・補助点は縮小率や配置に影響しません。画面外にある手・肘などの出力点は、引き続きfit対象です。
 `report`にはreferenceとdrivingの概算身長、およびreferenceと生成後の主要な実骨長を`reference->generated`形式で表示します。
 
-概算身長は、MHRの全308キーポイントから選んだ頭頂点に、頭・胴体・左右平均の脚・かかとの3D骨格長を加えて計測します。単眼画像からの推定値なので実測身長ではありません。身長を表示するには、全キーポイント出力に対応した`ComfyUI-SAM3DBody`でreferenceとdrivingを実行してください。
+概算身長は、内部リグの`R126: c_head_null`を頭頂として直接使い、以下の3D直線距離を合計します。
 
-身長とraw 2D診断は補足情報です。全308点が欠ける・使用不能な場合は該当側の身長を`unavailable`とし、通常のポーズ生成は続行します。SAM内部2Dが欠ける・使用不能な場合もマージ結果とdriving再投影は返し、`sam_raw_driving_pose_keypoint`はキャンバス情報と空の`people`リストを返します。再投影座標をraw座標の代わりには使いません。省略理由は`report`の`WARNING`に表示します。MHR70やカメラなど、ポーズ生成に必須の情報が不正な場合は引き続きエラーになります。
+```text
+概算身長 = 距離(R126, 69) + 距離(69, H)
+         + (左脚長 + 右脚長) / 2
+左脚長 = 距離(9, 11) + 距離(11, 13) + 距離(13, 17)
+右脚長 = 距離(10, 12) + 距離(12, 14) + 距離(14, 20)
+H = 左右股関節(9, 10)の3D中点
+```
+
+鼻や肩中央は経由せず、Hから股関節への腰幅方向の距離も加算しません。全308点からの
+頭頂候補選択は廃止しました。身長計測にはMHR70と`joint_coords`（内部リグ127点）が必要で、
+全308点は不要です。`report`の頭頂出典も`reference=R126, driving=R126`と表示します。
+単眼推定と区間の直線距離に基づく概算なので、実測の直立身長ではありません。
+
+身長とraw 2D診断は補足情報です。内部リグのR126が欠ける・使用不能な場合は該当側の身長を`unavailable`とし、通常のポーズ生成は続行します。SAM内部2Dが欠ける・使用不能な場合もマージ結果とdriving再投影は返し、`sam_raw_driving_pose_keypoint`はキャンバス情報と空の`people`リストを返します。再投影座標をraw座標の代わりには使いません。省略理由は`report`の`WARNING`に表示します。MHR70やカメラなど、ポーズ生成に必須の情報が不正な場合は引き続きエラーになります。
 
 MHR70には鼻・目・耳はありますが、輪郭や口を含む密な顔ランドマークはありません。
 そのためBODY18の顔点は出力し、`face_keypoints_2d`の70点はゼロconfidenceにします。
@@ -119,8 +132,8 @@ Process Image の mesh_data → SAM 3D Body Skeleton Debug → debug_image → P
 | `show_body` | 肩・腰・腕・脚・足先・かかと・首 |
 | `show_face` | 鼻・目・耳 |
 | `show_left_hand` / `show_right_hand` | 左右HAND21。左右は被写体本人の左右 |
-| `show_height` | 現在の身長計測に使う点と、選択された頭頂候補。身長計算自体は変更しない |
-| `show_head_candidates` | 全308点のうち頭頂選択の対象になる70〜307番も表示（既定OFF） |
+| `show_height` | R126→69→Hと左右の脚→かかとの計測点・経路 |
+| `show_head_candidates` | 全308点の70〜307番を参考表示（既定OFF）。互換性のため旧widget名を維持。身長計算には使わない |
 | `show_auxiliary` | マージで再配置しない63〜68番の補助点（既定OFF） |
 | `show_connections` | 関節接続、肩幅・腰幅・中心点との線 |
 | `labels` | 番号＋名前／番号のみ／OFF |
@@ -133,10 +146,9 @@ Process Image の mesh_data → SAM 3D Body Skeleton Debug → debug_image → P
 点の重なりが密なときは部位を絞り、ラベルを番号のみにしてください。reportにも表示点の
 名前・ピクセル座標・推定カメラ奥行き・画面内外を一覧します。
 
-頭頂は現在の選択ロジックによる推定候補で、解剖学的な頭頂を保証しません。
-全308点がない場合は頭頂・身長表示を省略し、理由をreportへ出します。メッシュが欠損・不正な
+頭頂はR126を使用します。R126が取得できない場合は頭頂・身長表示だけを省略し、理由をreportへ出します。メッシュが欠損・不正な
 場合も警告付きで関節描画を続行します。MHR70とカメラの異常はエラーになります。
-頭頂候補を表示する場合は全308点を出す
+密な頭部ランドマークを参考表示する場合のみ、全308点を出す
 [`gen-a6e/ComfyUI-SAM3DBody`](https://github.com/gen-a6e/ComfyUI-SAM3DBody/tree/fix/pytorch-device-compat)
 の`fix/pytorch-device-compat`ブランチが必要です。
 
@@ -149,9 +161,9 @@ MHRの番号と混同しないよう、`R126: c_head_null`のように`R`を付�
 親子接続は`show_connections`で切り替えられ、頭・首表示では範囲外の親へは線を引きません。
 
 まずメッシュとリグだけを見るなら、`show_body / show_face / show_left_hand / show_right_hand /
-show_height`をOFF、`show_mesh / show_rig`をONにしてください。従来の頭頂候補と比較する場合は
-`show_height`もONにします。**R126が解剖学的な頭頂に当たるかは未検証**で、今回の追加で
-身長計算や頭頂候補の選び方を変更するものではありません。
+show_height`をOFF、`show_mesh / show_rig`をONにしてください。身長の計測経路も確認する場合は
+`show_height`もONにします。R126のマーカーは共有し、重複表示しません。内部リグの親子接続と
+身長計測用の接続は別であり、身長はR113を経由せずR126→MHR69の直線距離を使います。
 
 内部リグの座標はProcess Image側でメートル換算・Y/Z反転済みのため、そのままメッシュと
 同じカメラで投影します。名前と親子階層は、mhr_model.ptから抽出された

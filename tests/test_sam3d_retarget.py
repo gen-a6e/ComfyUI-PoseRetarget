@@ -72,11 +72,18 @@ def sam_output(points=None, keypoints_2d=None):
         )
     return {
         "joints": body,
+        "joint_coords": rig_keypoints(),
         "keypoints_3d_full": full_keypoints(body),
         "camera": camera,
         "focal_length": np.array([800.0]),
         "raw_output": {"pred_keypoints_2d": keypoints_2d},
     }
+
+
+def rig_keypoints(head_top=(0.0, -1.02, 0.0)):
+    rig = np.zeros((127, 3), dtype=np.float64)
+    rig[126] = head_top
+    return rig
 
 
 def full_keypoints(points=None, head_top=(0.0, -1.02, 0.0), head_top_index=184):
@@ -150,49 +157,62 @@ class SAM3DRetargetTests(unittest.TestCase):
                 places=7, msg=name,
             )
 
-    def test_full_mhr_head_top_is_selected_along_head_axis(self):
-        body = skeleton()
-        full = full_keypoints(body)
-        # 横に遠い点ではなく、首→頭方向で最上部にある点が頭頂として選ばれること。
-        full[200] = (3.0, -0.80, 0.0)
-        output = sam_output(body)
-        output["keypoints_3d_full"] = full
-
-        head_top, index = sr.extract_head_top(output, body)
-
-        self.assertEqual(index, 184)
-        np.testing.assert_allclose(head_top, (0.0, -1.02, 0.0))
-
-    def test_estimated_height_uses_crown_and_both_heel_segments(self):
-        body = skeleton()
-        head_top = np.array((0.0, -1.02, 0.0))
-        expected = (
-            np.linalg.norm(body[sr.NECK] - sr.hip_center(body))
-            + np.linalg.norm(body[sr.NOSE] - sr.shoulder_center(body))
-            + 0.5 * (
-                np.linalg.norm(body[sr.LEFT_KNEE] - body[sr.LEFT_HIP])
-                + np.linalg.norm(body[sr.RIGHT_KNEE] - body[sr.RIGHT_HIP])
-            )
-            + 0.5 * (
-                np.linalg.norm(body[sr.LEFT_ANKLE] - body[sr.LEFT_KNEE])
-                + np.linalg.norm(body[sr.RIGHT_ANKLE] - body[sr.RIGHT_KNEE])
-            )
-            + np.linalg.norm(head_top - body[sr.NOSE])
-            + 0.5 * (
-                np.linalg.norm(body[sr.LEFT_HEEL] - body[sr.LEFT_ANKLE])
-                + np.linalg.norm(body[sr.RIGHT_HEEL] - body[sr.RIGHT_ANKLE])
-            )
-        )
-
-        self.assertAlmostEqual(
-            sr.estimated_height(body, head_top), expected, places=7
-        )
-
-    def test_height_reporting_requires_updated_full_mhr_output(self):
+    def test_head_top_uses_r126_even_when_dense_points_disagree_or_are_missing(self):
         output = sam_output()
+        output["keypoints_3d_full"][200] = (0., -200., 0.)
+        head_top, index = sr.extract_head_top(output)
+        self.assertEqual(index, 126)
+        np.testing.assert_array_equal(head_top, (0., -1.02, 0.))
         del output["keypoints_3d_full"]
-        with self.assertRaisesRegex(ValueError, "height reporting requires"):
+        np.testing.assert_array_equal(sr.extract_head_top(output)[0], head_top)
+        output["raw_output"]["pred_joint_coords"] = output.pop("joint_coords")[None]
+        np.testing.assert_array_equal(sr.extract_head_top(output)[0], head_top)
+        # 戻り値を変更してもSAM入力を破壊しない。
+        head_top[:] = 99
+        np.testing.assert_array_equal(sr.extract_head_top(output)[0], (0., -1.02, 0.))
+
+    @staticmethod
+    def height_fixture():
+        # 頭→首0.30、首→腰0.60、腿0.40、脛0.35、足首→踵0.05 = 1.70m。
+        body = skeleton()
+        body[69] = (0., .3, 0.)
+        for x, chain in ((.1, (9, 11, 13, 17)), (-.1, (10, 12, 14, 20))):
+            for index, y in zip(chain, (.9, 1.3, 1.65, 1.7)):
+                body[index] = (x, y, 0.)
+        return body, np.zeros(3)
+
+    def test_height_known_lengths_and_asymmetric_legs(self):
+        body, head = self.height_fixture()
+        self.assertAlmostEqual(sr.estimated_height(body, head), 1.7)
+        # 左の脛だけ20cm長くした場合、左右平均なので身長は10cm増加する。
+        body[[13, 17], 1] += .2
+        self.assertAlmostEqual(sr.estimated_height(body, head), 1.8)
+
+    def test_height_does_not_depend_on_shoulders_nose_or_hip_width(self):
+        body, head = self.height_fixture()
+        body[[5, 6], 1] += .05
+        body[0] += (5., -3., 4.)
+        body[[9, 11, 13, 17], 0] += .5
+        body[[10, 12, 14, 20], 0] -= .5
+        self.assertAlmostEqual(sr.estimated_height(body, head), 1.7)
+
+    def test_height_uses_3d_segment_lengths_for_bent_leg_and_rigid_rotation(self):
+        body, head = self.height_fixture()
+        body[11], body[13], body[17] = (.1, .9, .4), (.1, 1.25, .4), (.1, 1.3, .4)
+        self.assertAlmostEqual(sr.estimated_height(body, head), 1.7)
+        rotation = np.array([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+        shift = np.array([2., 3., 4.])
+        self.assertAlmostEqual(sr.estimated_height(body @ rotation + shift, head @ rotation + shift), 1.7)
+
+    def test_height_reporting_requires_r126_not_dense_points(self):
+        output = sam_output()
+        del output["joint_coords"]
+        with self.assertRaisesRegex(ValueError, "height reporting requires MHR127"):
             sr.extract_head_top(output)
+        for value in (np.zeros((126, 3)), np.zeros((128, 3)), np.full((127, 3), np.nan)):
+            output["joint_coords"] = value
+            with self.assertRaises(ValueError):
+                sr.extract_head_top(output)
 
     def test_detailed_scales_control_each_reported_length(self):
         reference = skeleton()
@@ -433,14 +453,14 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertIn("Lengths reference->generated", report)
         self.assertIn("shoulder_to_nose:", report)
 
-    def test_node_uses_full_mhr_head_top_for_height_report(self):
+    def test_node_uses_r126_for_height_report_without_dense_points(self):
         node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         node = node_class()
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
         reference = sam_output()
         driving = sam_output()
-        reference["keypoints_3d_full"] = full_keypoints()
-        driving["keypoints_3d_full"] = full_keypoints()
+        del reference["keypoints_3d_full"]
+        del driving["keypoints_3d_full"]
 
         _, _, report, _ = node.run(
             reference, driving, image,
@@ -450,7 +470,7 @@ class SAM3DRetargetTests(unittest.TestCase):
 
         self.assertIn("reference_height=", report)
         self.assertIn("driving_height=", report)
-        self.assertIn("reference=184, driving=184", report)
+        self.assertIn("reference=R126, driving=R126", report)
 
     def test_driving_output_is_direct_projection_without_fit_or_retarget(self):
         node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
@@ -531,9 +551,9 @@ class SAM3DRetargetTests(unittest.TestCase):
                                       driving=drive_missing, raw=raw_missing):
                         reference, driving = sam_output(), sam_output()
                         if ref_missing:
-                            del reference["keypoints_3d_full"]
+                            del reference["joint_coords"]
                         if drive_missing:
-                            del driving["keypoints_3d_full"]
+                            del driving["joint_coords"]
                         if raw_missing:
                             del driving["raw_output"]["pred_keypoints_2d"]
                         result = run(reference, driving)
@@ -566,13 +586,13 @@ class SAM3DRetargetTests(unittest.TestCase):
         baseline = run(sam_output(), sam_output())
         cases = (
             (np.zeros((70, 3)), np.zeros((17, 2))),
-            (np.full((308, 3), np.nan), np.full((70, 2), np.nan)),
+            (np.full((127, 3), np.nan), np.full((70, 2), np.nan)),
             ("not numeric", "not numeric"),
         )
-        for full, raw in cases:
-            with self.subTest(full_shape=np.shape(full), raw_shape=np.shape(raw)):
+        for rig, raw in cases:
+            with self.subTest(rig_shape=np.shape(rig), raw_shape=np.shape(raw)):
                 reference, driving = sam_output(), sam_output()
-                reference["keypoints_3d_full"] = full
+                reference["joint_coords"] = rig
                 driving["raw_output"]["pred_keypoints_2d"] = raw
                 result = run(reference, driving)
                 self.assertEqual(result[:2], baseline[:2])
@@ -590,8 +610,8 @@ class SAM3DRetargetTests(unittest.TestCase):
                 ("focal_length", np.array([0.]), "must be positive")):
             with self.subTest(field=field, expected=expected):
                 reference, driving = sam_output(), sam_output()
-                del reference["keypoints_3d_full"]
-                del driving["keypoints_3d_full"]
+                del reference["joint_coords"]
+                del driving["joint_coords"]
                 del driving["raw_output"]["pred_keypoints_2d"]
                 driving[field] = value
                 with self.assertRaisesRegex(ValueError, expected):

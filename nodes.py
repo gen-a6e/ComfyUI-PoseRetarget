@@ -19,12 +19,12 @@ from .sam3d_retarget import (
 def _height_report(sam3d, points, side, warnings):
     """補足の身長計測だけを省略できるようにし、骨格の必須検証とは分離する。"""
     try:
-        head_top, index = extract_head_top(sam3d, points)
+        head_top, index = extract_head_top(sam3d)
         height = estimated_height(points, head_top)
     except ValueError as exc:
         warnings.append(f"{side}_height unavailable: {exc}")
         return "unavailable", "unavailable"
-    return f"{height:.3f} m", index
+    return f"{height:.3f} m", f"R{index}"
 
 
 class SAM3DBodyPoseRetarget:
@@ -99,7 +99,7 @@ class SAM3DBodyPoseRetarget:
         reference = extract_mhr70(reference_sam3d)
         driving = extract_mhr70(driving_sam3d)
 
-        # 身長は補足情報。全308点が欠ける・使用不能でも骨長転送は続行する。
+        # 身長は補足情報。R126が欠ける・使用不能でも骨長転送は続行する。
         warnings = []
         reference_height_note, reference_head_top_index = _height_report(
             reference_sam3d, reference, "reference", warnings
@@ -216,9 +216,9 @@ class SAM3DBodyPoseRetarget:
                 report += (
                     f" {side}_hand_raw2d_vs_reprojected: unavailable."
                 )
-        # 実データ確認用に、頭頂として選ばれた308点中の番号も残す。
+        # 頭頂の出典は内部リグR126。MHR70/308の番号とは区別する。
         report += (
-            " Head-top full-MHR indices "
+            " Head-top internal-rig indices "
             f"reference={reference_head_top_index}, "
             f"driving={driving_head_top_index}."
         )
