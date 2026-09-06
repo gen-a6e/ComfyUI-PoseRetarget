@@ -116,10 +116,11 @@ for left_chain, right_chain in zip(LEFT_HAND_CHAINS, RIGHT_HAND_CHAINS):
 MIRROR_CHILD.update({right: left for left, right in tuple(MIRROR_CHILD.items())})
 
 
-# SAPIENS/SDPoseが期待するCOCO BODY18順に、MHR70の関節番号を対応させる。
+# SAPIENS/SDPoseが期待するCOCO BODY18順。Noneは投影後の左右肩中点。
+# OpenPoseの首スロットとMHR69のneckは別定義。内部3Dの69番は変更しない。
 COCO18_FROM_MHR70 = (
     NOSE,
-    NECK,
+    None,
     RIGHT_SHOULDER,
     RIGHT_ELBOW,
     RIGHT_WRIST,
@@ -157,10 +158,11 @@ LEFT_HAND_FROM_MHR70 = (
 )
 
 # fitの範囲は、実際にOpenPoseへ出力する点だけで決める。
-# 足先・かかと・補助点は描かれないため、余白や縮小率へ影響させない。
+# 足先・かかと・補助点・MHR69は描かれないため、fitへ影響させない。
+# 仮想首点は両肩の間に収まるので、両肩が範囲に含まれれば十分。
 OPENPOSE_FROM_MHR70 = tuple(sorted(set(
     COCO18_FROM_MHR70 + LEFT_HAND_FROM_MHR70 + RIGHT_HAND_FROM_MHR70
-)))
+) - {None}))
 
 
 def as_numpy(value, name):
@@ -615,9 +617,18 @@ def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16)
 
 
 def _openpose_field(projected, valid, indices):
-    """MHR70の指定点を、OpenPoseの[x, y, confidence]配列へ並べ替える。"""
+    """指定点を並べ替え、Noneのスロットは2D左右肩中点として作る。"""
     out = np.zeros((len(indices), 3), dtype=np.float64)
     for output_index, mhr_index in enumerate(indices):
+        if mhr_index is None:
+            # 3D中点の投影ではなく2D中点。左右肩の奥行きが違っても線の中央になる。
+            # 片肩が無効なら首点も無効とし、69番での代用はしない。
+            if valid[LEFT_SHOULDER] and valid[RIGHT_SHOULDER]:
+                out[output_index, :2] = (
+                    projected[LEFT_SHOULDER] + projected[RIGHT_SHOULDER]
+                ) * 0.5
+                out[output_index, 2] = 1.0
+            continue
         if valid[mhr_index]:
             out[output_index, 0] = projected[mhr_index, 0]
             out[output_index, 1] = projected[mhr_index, 1]

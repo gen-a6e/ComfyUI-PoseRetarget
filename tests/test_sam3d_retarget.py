@@ -364,16 +364,46 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(scale, 1.0)
         np.testing.assert_array_equal(fitted, points)
 
+    def test_openpose_neck_uses_2d_midpoint_not_projected_3d_neck(self):
+        points = skeleton()
+        points[sr.LEFT_SHOULDER] = (1.0, -1.0, 1.0)
+        points[sr.RIGHT_SHOULDER] = (-1.0, -2.0, 3.0)
+        projected, valid, _ = sr.project_mhr70(
+            points, np.zeros(3), np.array([100.0, 100.0]), 400, 400)
+        before, before_valid = projected.copy(), valid.copy()
+        person = sr.to_pose_keypoint(projected, valid, 400, 400)[0]["people"][0]
+        body = np.asarray(person["pose_keypoints_2d"]).reshape(18, 3)
+        # 肩は(300,100)と(166.666...,133.333...)。3D中点の投影(200,125)ではない。
+        np.testing.assert_allclose(body[1], (233.333333, 116.666667, 1.0))
+        for slot, index in enumerate(sr.COCO18_FROM_MHR70):
+            if index is not None and valid[index]:
+                np.testing.assert_allclose(body[slot, :2], projected[index], atol=1e-6)
+        np.testing.assert_array_equal(projected, before)
+        np.testing.assert_array_equal(valid, before_valid)
+
+    def test_openpose_neck_validity_depends_only_on_both_shoulders(self):
+        projected = np.full((70, 2), 50.0)
+        for left, right, neck in ((True, True, False), (False, True, True),
+                                  (True, False, True), (False, False, True)):
+            with self.subTest(left=left, right=right, neck=neck):
+                valid = np.ones(70, dtype=bool)
+                valid[sr.LEFT_SHOULDER] = left
+                valid[sr.RIGHT_SHOULDER] = right
+                valid[sr.NECK] = neck
+                person = sr.to_pose_keypoint(projected, valid, 100, 100)[0]["people"][0]
+                body = np.asarray(person["pose_keypoints_2d"]).reshape(18, 3)
+                np.testing.assert_array_equal(body[1], (50, 50, 1) if left and right else (0, 0, 0))
+
     def test_hidden_points_do_not_change_fitted_openpose(self):
         points = np.full((70, 2), 50.0)
         points[sr.NOSE] = (30.0, 30.0)
         points[sr.LEFT_ANKLE] = (70.0, 70.0)
         valid = np.ones(70, dtype=bool)
-        # 足の6点と補助点の6点をそれぞれ動かしても、描画結果は不変。
+        # 足・補助点と内部neckを動かしても、描画結果は不変。
         for mode in ("shrink_to_fit", "fit_exactly"):
             baseline, baseline_scale = sr.fit_projected(
                 points, valid, 100, 100, mode, margin=16)
-            for index in (*range(15, 21), *range(63, 69)):
+            for index in (*range(15, 21), *range(63, 70)):
                 with self.subTest(mode=mode, hidden_index=index):
                     changed = points.copy()
                     changed[index] = (1000.0, -2000.0)
@@ -425,6 +455,26 @@ class SAM3DRetargetTests(unittest.TestCase):
         fitted, scale = sr.fit_projected(points, valid, 100, 100, "off")
         self.assertEqual(scale, 1.0)
         np.testing.assert_array_equal(fitted, points)
+
+    def test_all_three_node_pose_outputs_use_their_own_2d_shoulder_midpoint(self):
+        node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        driving = skeleton()
+        driving[sr.LEFT_SHOULDER] += (0.0, 0.12, 0.5)
+        source = sam_output(driving)
+        raw = source["raw_output"]["pred_keypoints_2d"]
+        raw[sr.LEFT_SHOULDER] = (100, 80)
+        raw[sr.RIGHT_SHOULDER] = (200, 120)
+        merged, projected, _, diagnostic = node.run(
+            sam_output(), source, image, "off",
+            1.3, 1.0, 1.0, 1.0, 1.0, "fit_exactly", 16)
+        for output in (merged, projected, diagnostic):
+            body = np.asarray(output[0]["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+            np.testing.assert_allclose(body[1, :2], (body[2, :2] + body[5, :2]) * 0.5,
+                                       atol=1e-6)
+            self.assertEqual(body[1, 2], 1.0)
+        raw_body = np.asarray(diagnostic[0]["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+        np.testing.assert_array_equal(raw_body[1], (150, 100, 1))
 
     def test_node_accepts_sam3d_output_and_returns_pose_keypoint(self):
         node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
