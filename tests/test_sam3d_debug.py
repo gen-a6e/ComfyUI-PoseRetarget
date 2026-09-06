@@ -25,6 +25,85 @@ def mesh_sample():
 
 
 class DebugTests(unittest.TestCase):
+    def test_rig_scope_uses_internal_indices_and_parent_hierarchy(self):
+        data = sam_output()
+        data["joint_coords"] = np.arange(381).reshape(127, 3) / 100.
+        points, names, colors, edges, _ = debug.debug_geometry(data, show_rig=True)
+        selected = {names[i] for i in colors if names[i].startswith("R")}
+        self.assertEqual(len(selected), 17)
+        self.assertIn("R126: c_head_null", selected)
+        self.assertNotIn("R37: c_spine3", selected)
+        head, tip = names.index("R113: c_head"), names.index("R126: c_head_null")
+        self.assertIn((tip, head), edges)
+        np.testing.assert_array_equal(points[tip], data["joint_coords"][126])
+        np.testing.assert_array_equal(points[:70], data["joints"])
+        # 全身では親が範囲外だった首→上部脊椎も結び、rootは自分と結ばない。
+        _, names, colors, edges, _ = debug.debug_geometry(data, show_rig=True, rig_scope="all")
+        rig_edges = [(a, b) for a, b in edges if names[a].startswith("R")]
+        self.assertEqual(len(rig_edges), 126)
+        self.assertEqual(len([i for i in colors if names[i].startswith("R")]), 127)
+        self.assertIn((names.index("R110: c_neck"), names.index("R37: c_spine3")), edges)
+        self.assertTrue(all(a != b for a, b in rig_edges))
+
+    def test_rig_projection_uses_same_camera_without_second_axis_flip_or_scaling(self):
+        data = sam_output()
+        # 表示対象以外をカメラ後方へ。検査点は手計算で確認できる座標にする。
+        rig = np.tile([0., 0., -10.], (127, 1))
+        rig[113] = [-.2, -.1, 0.]
+        rig[126] = [.3, -.6, 1.]
+        data["joint_coords"] = rig.copy()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        result, report = debug.render_debug(data, image, show_mesh=False, show_rig=True,
+                                            **options_off())
+        # (384/2 + 800*.3/6, 512/2 - 800*.6/6) = (232, 176)
+        np.testing.assert_allclose(result[0, 176, 232], np.array([240, 255, 255])/255.)
+        np.testing.assert_allclose(result[0, 240, 160], np.array([255, 120, 60])/255.)
+        self.assertIn("R126: c_head_null | 232.00 176.00 | 6.0000 | visible", report)
+        self.assertIn("R110: c_neck | 0.00 0.00 | -5.0000 | not_projectable", report)
+        np.testing.assert_array_equal(data["joint_coords"], rig)
+        self.assertFalse(image.any())
+
+    def test_rig_connections_toggle_and_raw_singleton_fallback(self):
+        data = sam_output()
+        rig = np.tile([0., 0., -10.], (127, 1))
+        rig[113], rig[126] = (0., -.2, 0.), (0., -1., 0.)
+        data["raw_output"]["pred_joint_coords"] = rig[None]
+        opts = options_off()
+        source = np.zeros((1, 512, 384, 3), np.float32)
+        off, _ = debug.render_debug(data, source, show_mesh=False, show_rig=True, **opts)
+        opts["show_connections"] = True
+        on, _ = debug.render_debug(data, source, show_mesh=False, show_rig=True, **opts)
+        self.assertFalse(off[0, 160, 192].any())
+        self.assertTrue(on[0, 160, 192].any())
+
+    def test_missing_or_unusable_rig_does_not_change_existing_overlays(self):
+        data = mesh_sample()
+        source = np.zeros((1, 512, 384, 3), np.float32)
+        expected, _ = debug.render_debug(data, source)
+        for value in (None, np.zeros((126, 3)), np.zeros((128, 3)),
+                      np.zeros((2, 127, 3)), np.full((127, 3), np.nan), "invalid"):
+            with self.subTest(shape=np.shape(value)):
+                data["joint_coords"] = value
+                result, report = debug.render_debug(data, source, show_rig=True)
+                np.testing.assert_array_equal(result, expected)
+                self.assertIn("WARNING: internal rig unavailable", report)
+                disabled, report = debug.render_debug(data, source, show_rig=False)
+                np.testing.assert_array_equal(disabled, expected)
+                self.assertNotIn("internal rig unavailable", report)
+
+    def test_rig_and_dense_landmark_indices_do_not_collide(self):
+        data = sam_output()
+        data["joint_coords"] = np.zeros((127, 3))
+        points, names, colors, edges, _ = debug.debug_geometry(
+            data, show_rig=True, rig_scope="all", show_head_candidates=True)
+        landmark = names.index("126: head_candidate")
+        rig_tip = names.index("R126: c_head_null")
+        self.assertNotEqual(landmark, rig_tip)
+        self.assertIn(landmark, colors)
+        self.assertIn(rig_tip, colors)
+        self.assertIn((rig_tip, names.index("R113: c_head")), edges)
+        np.testing.assert_array_equal(points[landmark], data["keypoints_3d_full"][126])
+
     def test_mesh_and_joint_overlay_share_pixels_without_transforming_input(self):
         data = mesh_sample()
         data["joints"][69] = (0, 0, 0)
@@ -115,6 +194,8 @@ class DebugTests(unittest.TestCase):
         self.assertEqual(tuple(result.shape), (1, 512, 384, 3))
         self.assertIn("307: head_candidate", report)
         self.assertTrue(torch.isfinite(result).all())
+        inputs = list(node.INPUT_TYPES()["required"])
+        self.assertEqual(inputs[-2:], ["show_rig", "rig_scope"])
 
 
 if __name__ == "__main__":

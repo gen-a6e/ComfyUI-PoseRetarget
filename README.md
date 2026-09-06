@@ -125,6 +125,8 @@ Process Image の mesh_data → SAM 3D Body Skeleton Debug → debug_image → P
 | `show_connections` | 関節接続、肩幅・腰幅・中心点との線 |
 | `labels` | 番号＋名前／番号のみ／OFF |
 | `point_radius` / `font_size` | 点の半径とラベル文字サイズ |
+| `show_rig` | 内部リグMHR127の表示（既定OFF）。MHR70とは別の関節体系 |
+| `rig_scope` | `head_neck`は頭・首のR110〜R126、`all`は全127関節 |
 
 69番neckは赤、5・6番肩は青、0番鼻は緑。3Dで計算した肩中央（S）は黄、腰中央（H）は紫の
 四角マーカーです。関節・線はメッシュの**内部も見える上描き**で、遮蔽判定は行いません。
@@ -137,6 +139,27 @@ Process Image の mesh_data → SAM 3D Body Skeleton Debug → debug_image → P
 頭頂候補を表示する場合は全308点を出す
 [`gen-a6e/ComfyUI-SAM3DBody`](https://github.com/gen-a6e/ComfyUI-SAM3DBody/tree/fix/pytorch-device-compat)
 の`fix/pytorch-device-compat`ブランチが必要です。
+
+### 内部リグで頭頂付近を確認する
+
+`show_rig=ON`、`rig_scope=head_neck`にすると、`mesh_data["joint_coords"]`の
+頭・首の内部関節を表示します。追加の入力接続やSAM側のコード更新は不要です。
+MHRの番号と混同しないよう、`R126: c_head_null`のように`R`を付けたラベルと菱形を使います。
+`R113: c_head`はオレンジ、`R126: c_head_null`は白の大きなマーカー、ほかはシアンです。
+親子接続は`show_connections`で切り替えられ、頭・首表示では範囲外の親へは線を引きません。
+
+まずメッシュとリグだけを見るなら、`show_body / show_face / show_left_hand / show_right_hand /
+show_height`をOFF、`show_mesh / show_rig`をONにしてください。従来の頭頂候補と比較する場合は
+`show_height`もONにします。**R126が解剖学的な頭頂に当たるかは未検証**で、今回の追加で
+身長計算や頭頂候補の選び方を変更するものではありません。
+
+内部リグの座標はProcess Image側でメートル換算・Y/Z反転済みのため、そのままメッシュと
+同じカメラで投影します。名前と親子階層は、mhr_model.ptから抽出された
+[MHR127対応表（固定版）](https://github.com/AmmarkoV/SAM3DBody-cpp/blob/db3fd03dd6e556aaf1774bbcb02f0a9c040b862b/src/mhr_joint_table.h)
+を使用します。127点以外の構成は対応外です。内部リグが欠損・不正な場合は、その表示だけを
+省略してreportに理由を出し、既存のメッシュ・MHR点の描画は継続します。
+設定は既存widgetの末尾へ追加しています。更新後に設定が見えない場合はデバッグノードを
+追加し直してください。Pose Retargetノードの入出力・計算に変更はありません。
 
 ## ライセンス
 

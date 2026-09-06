@@ -7,6 +7,7 @@ NumPyでメッシュのZバッファを作り、Pillowで関節とラベルを�
 import numpy as np
 
 from . import sam3d_retarget as sr
+from .mhr127_rig import MHR127_RIG, RIG_HEAD, RIG_HEAD_NULL, RIG_HEAD_NECK
 
 
 # SAM公式 mhr70.py の original_keypoint_info と同じ名前・番号。
@@ -35,6 +36,8 @@ GROUPS = {
 COLORS = {"body": (70, 195, 255), "face": (70, 240, 140),
           "left_hand": (255, 150, 55), "right_hand": (235, 100, 245),
           "auxiliary": (180, 180, 180), "height": (255, 230, 70)}
+RIG_COLOR = (90, 230, 225)
+RIG_HIGHLIGHTS = {RIG_HEAD: (255, 120, 60), RIG_HEAD_NULL: (240, 255, 255)}
 
 
 def _array3(value, name):
@@ -107,9 +110,11 @@ def mesh_overlay(rgb, vertices, faces, camera, focal, opacity):
 
 def debug_geometry(mesh_data, show_body=True, show_face=True, show_left_hand=True,
                    show_right_hand=True, show_height=True, show_head_candidates=False,
-                   show_auxiliary=False):
+                   show_auxiliary=False, show_rig=False, rig_scope="head_neck"):
     """描画点・線を組み立てる。中心点は3Dで計算してから投影する。"""
     body = sr.extract_mhr70(mesh_data)
+    if rig_scope not in ("head_neck", "all"):
+        raise ValueError("rig_scope must be head_neck or all")
     points = list(body) + [sr.shoulder_center(body), sr.hip_center(body)]
     names = [f"{i}: {name}" for i, name in enumerate(JOINT_NAMES)]
     names += ["S: shoulder_center", "H: hip_center"]
@@ -159,6 +164,35 @@ def debug_geometry(mesh_data, show_body=True, show_face=True, show_left_hand=Tru
                         names.append(f"{i}: head_candidate")
         except ValueError as exc:
             notes.append(f"WARNING: height/head candidates unavailable: {exc}")
+    if show_rig:
+        try:
+            value = mesh_data.get("joint_coords")
+            if value is None:
+                value = (mesh_data.get("raw_output") or {}).get("pred_joint_coords")
+            rig = _array3(value, "joint_coords")
+            if len(rig) != len(MHR127_RIG):
+                raise ValueError(f"expected MHR127 joint_coords (127, 3); received {rig.shape}")
+        except ValueError as exc:
+            # 補足表示の失敗だけで、メッシュ・MHR点の表示を止めない。
+            notes.append(f"WARNING: internal rig unavailable: {exc}")
+        else:
+            # Process Imageは単位換算とY/Z反転を済ませて出力する。
+            # 再反転・再スケールするとメッシュからずれるため、そのまま共通投影へ渡す。
+            offset = len(points)
+            points.extend(rig)
+            names.extend(f"R{i}: {name}" for i, (name, _) in enumerate(MHR127_RIG))
+            indices = RIG_HEAD_NECK if rig_scope == "head_neck" else range(len(rig))
+            for i in indices:
+                colors[offset+i] = RIG_HIGHLIGHTS.get(i, RIG_COLOR)
+            for i in indices:
+                parent = MHR127_RIG[i][1]
+                if parent >= 0 and offset+parent in colors:
+                    edges.append((offset+i, offset+parent))
+            notes.extend((
+                f"internal_rig=MHR127; rig_scope={rig_scope}; selected_rig_points={len(indices)}",
+                "R=internal rig index, not MHR keypoint index; diamond markers, cyan lines.",
+                "R113 c_head=orange; R126 c_head_null=white; anatomical head-top identity unverified.",
+            ))
     edges = [(a, b) for a, b in edges if a in colors and b in colors]
     return np.asarray(points), names, colors, edges, notes
 
@@ -183,7 +217,8 @@ def render_debug(mesh_data, image, mesh_opacity=0.35, show_mesh=True,
                  show_body=True, show_face=True, show_left_hand=True,
                  show_right_hand=True, show_height=True, show_head_candidates=False,
                  show_auxiliary=False, show_connections=True,
-                 labels="index_and_name", point_radius=4, font_size=12):
+                 labels="index_and_name", point_radius=4, font_size=12,
+                 show_rig=False, rig_scope="head_neck"):
     """1画像・1人物を描画し、IMAGE用のfloat32配列と診断reportを返す。"""
     from PIL import Image, ImageDraw, ImageFont
 
@@ -203,7 +238,7 @@ def render_debug(mesh_data, image, mesh_opacity=0.35, show_mesh=True,
     camera, focal = sr.extract_camera(mesh_data)
     points, names, colors, edges, notes = debug_geometry(
         mesh_data, show_body, show_face, show_left_hand, show_right_hand,
-        show_height, show_head_candidates, show_auxiliary)
+        show_height, show_head_candidates, show_auxiliary, show_rig, rig_scope)
     if show_mesh and mesh_opacity > 0:
         try:
             vertices = mesh_data.get("vertices")
@@ -277,6 +312,13 @@ def render_debug(mesh_data, image, mesh_opacity=0.35, show_mesh=True,
     for i in visible:
         x, y = xy[i]
         r = point_radius
+        if names[i].startswith("R"):
+            # 内部リグは菱形。R113/R126だけ大きくして候補点と比較しやすくする。
+            if names[i].startswith(("R113:", "R126:")):
+                r += 2
+            draw.polygon(((x, y-r), (x+r, y), (x, y+r), (x-r, y)),
+                         fill=colors[i], outline="black")
+            continue
         bounds = (x-r, y-r, x+r, y+r)
         if i >= 70:
             draw.rectangle(bounds, fill=colors[i], outline="black")
@@ -313,6 +355,9 @@ class SAM3DBodySkeletonDebug:
         required.update({"labels": (["index_and_name", "index", "off"],),
                          "point_radius": ("INT", {"default": 4, "min": 1, "max": 20}),
                          "font_size": ("INT", {"default": 12, "min": 8, "max": 32})})
+        # 既存widgetの順番を変えず、内部リグの切替だけを末尾に追加する。
+        required.update({"show_rig": ("BOOLEAN", {"default": False}),
+                         "rig_scope": (["head_neck", "all"],)})
         return {"required": required}
 
     RETURN_TYPES = ("IMAGE", "STRING")
