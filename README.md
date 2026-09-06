@@ -47,8 +47,6 @@ git clone git@github.com:gen-a6e/ComfyUI-PoseRetarget.git
 | `arm_scale` | 1.0 | 腕と手の追加倍率 |
 | `head_scale` | 1.0 | 首から上の追加倍率 |
 | `hand_scale` | 1.0 | 手指の追加倍率 |
-| `fit_to_canvas` | shrink_to_fit | はみ出した場合のキャンバス調整 |
-| `canvas_margin` | 16 | fit_exactly、または縮小が必要な場合の余白 |
 | `torso_scale` | 1.0 | 腰中央から首までの胴長の追加倍率 |
 | `shoulder_width_scale` | 1.0 | 肩幅の追加倍率 |
 | `hip_width_scale` | 1.0 | 腰幅の追加倍率 |
@@ -57,6 +55,10 @@ git clone git@github.com:gen-a6e/ComfyUI-PoseRetarget.git
 | `forearm_scale` | 1.0 | 前腕の追加倍率（`arm_scale`との積） |
 | `thigh_scale` | 1.0 | 太腿の追加倍率（`leg_scale`との積） |
 | `shin_scale` | 1.0 | 脛の追加倍率（`leg_scale`との積） |
+| `fit_to_canvas` | off | 既定ではキャンバス調整なし。必要な場合にfitを選択 |
+| `canvas_margin` | 16 | fit_exactly、または縮小が必要な場合の余白 |
+
+`fit_to_canvas`と`canvas_margin`は入力設定の末尾にあります。旧版から更新する場合は、保存済みwidget値の順序が変わるため、既存ノードの設定を控えてからノードを追加し直してください。
 
 ```text
 (Down)Load SAM 3D Body Model ─┬→ Process Image ← reference画像 ─┐

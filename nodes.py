@@ -50,9 +50,6 @@ class SAM3DBodyPoseRetarget:
                                          "max": 3.0, "step": 0.01}),
                 "hand_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
                                          "max": 3.0, "step": 0.01}),
-                "fit_to_canvas": (["shrink_to_fit", "fit_exactly", "off"],),
-                "canvas_margin": ("INT", {"default": 16, "min": 0,
-                                          "max": 512, "step": 1}),
                 "torso_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
                                             "max": 3.0, "step": 0.01}),
                 "shoulder_width_scale": (
@@ -73,6 +70,10 @@ class SAM3DBodyPoseRetarget:
                                             "max": 3.0, "step": 0.01}),
                 "shin_scale": ("FLOAT", {"default": 1.0, "min": 0.1,
                                            "max": 3.0, "step": 0.01}),
+                # 出力画像の調整は部位別scaleの後にまとめる。既定では投影を維持する。
+                "fit_to_canvas": (["off", "shrink_to_fit", "fit_exactly"],),
+                "canvas_margin": ("INT", {"default": 16, "min": 0,
+                                          "max": 512, "step": 1}),
             }
         }
 
