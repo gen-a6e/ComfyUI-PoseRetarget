@@ -601,7 +601,8 @@ class SAM3DRetargetTests(unittest.TestCase):
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
         package = load_package()
         self.assertEqual(
-            set(package.NODE_CLASS_MAPPINGS), {"SAM3DBodyPoseRetarget"})
+            set(package.NODE_CLASS_MAPPINGS),
+            {"SAM3DBodyPoseRetarget", "SAM3DBodySkeletonDebug"})
         inputs = package.NODE_CLASS_MAPPINGS[
             "SAM3DBodyPoseRetarget"].INPUT_TYPES()["required"]
 

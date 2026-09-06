@@ -1,3 +1,4 @@
+from .sam3d_debug import SAM3DBodySkeletonDebug
 from .sam3d_retarget import (
     extract_camera,
     extract_head_top,
@@ -244,8 +245,10 @@ class SAM3DBodyPoseRetarget:
 
 NODE_CLASS_MAPPINGS = {
     "SAM3DBodyPoseRetarget": SAM3DBodyPoseRetarget,
+    "SAM3DBodySkeletonDebug": SAM3DBodySkeletonDebug,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SAM3DBodyPoseRetarget": "SAM 3D Body Pose Retarget",
+    "SAM3DBodySkeletonDebug": "SAM 3D Body Skeleton Debug",
 }

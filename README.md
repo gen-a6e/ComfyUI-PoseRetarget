@@ -14,7 +14,7 @@ cd ComfyUI/custom_nodes
 git clone git@github.com:gen-a6e/ComfyUI-PoseRetarget.git
 ```
 
-このリポジトリ自体に追加の依存パッケージはありません（numpyはComfyUIに同梱）。
+追加インストールは不要です（numpyと、デバッグ描画用のPillowはComfyUIに同梱）。
 
 3D推定には既存の
 [`ComfyUI-SAM3DBody`](https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody)
@@ -98,6 +98,45 @@ MHR70には鼻・目・耳はありますが、輪郭や口を含む密な顔ラ
 左右の手はそれぞれ21点を出力します。
 
 現在は1画像・1人用です。`SAM 3D Body: Process Image`が選んだ先頭の人物を使います。
+
+## SAM 3D Body Skeleton Debug
+
+入力SAM骨格の位置を、元画像と半透明メッシュに重ねて確認する独立ノードです。
+マージ後の骨格は扱わず、既存のPose Retargetノードの計算・入出力も変更しません。
+
+```text
+Process Image の mesh_data → SAM 3D Body Skeleton Debug → debug_image → Preview Image
+推論に使った元画像 ──────────↗                           → report
+```
+
+画像はSAM推論時と同じサイズ・内容を接続してください。自動fit・リサイズ・左右反転はせず、
+メッシュと関節に同じSAMカメラ・焦点距離・画像中心を使います。別サイズ画像との誤接続は
+入力データに元画像サイズがないため自動検出できません。1画像・1人物専用です。
+
+| 設定 | 内容 |
+|---|---|
+| `show_mesh` / `mesh_opacity` | メッシュ表示と不透明度。CPUのZバッファで最前面を半透明合成 |
+| `show_body` | 肩・腰・腕・脚・足先・かかと・首 |
+| `show_face` | 鼻・目・耳 |
+| `show_left_hand` / `show_right_hand` | 左右HAND21。左右は被写体本人の左右 |
+| `show_height` | 現在の身長計測に使う点と、選択された頭頂候補。身長計算自体は変更しない |
+| `show_head_candidates` | 全308点のうち頭頂選択の対象になる70〜307番も表示（既定OFF） |
+| `show_auxiliary` | マージで再配置しない63〜68番の補助点（既定OFF） |
+| `show_connections` | 関節接続、肩幅・腰幅・中心点との線 |
+| `labels` | 番号＋名前／番号のみ／OFF |
+| `point_radius` / `font_size` | 点の半径とラベル文字サイズ |
+
+69番neckは赤、5・6番肩は青、0番鼻は緑。3Dで計算した肩中央（S）は黄、腰中央（H）は紫の
+四角マーカーです。関節・線はメッシュの**内部も見える上描き**で、遮蔽判定は行いません。
+点の重なりが密なときは部位を絞り、ラベルを番号のみにしてください。reportにも表示点の
+名前・ピクセル座標・推定カメラ奥行き・画面内外を一覧します。
+
+頭頂は現在の選択ロジックによる推定候補で、解剖学的な頭頂を保証しません。
+全308点がない場合は頭頂・身長表示を省略し、理由をreportへ出します。メッシュが欠損・不正な
+場合も警告付きで関節描画を続行します。MHR70とカメラの異常はエラーになります。
+頭頂候補を表示する場合は全308点を出す
+[`gen-a6e/ComfyUI-SAM3DBody`](https://github.com/gen-a6e/ComfyUI-SAM3DBody/tree/fix/pytorch-device-compat)
+の`fix/pytorch-device-compat`ブランチが必要です。
 
 ## ライセンス
 
