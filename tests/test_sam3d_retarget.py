@@ -344,6 +344,68 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(scale, 1.0)
         np.testing.assert_array_equal(fitted, points)
 
+    def test_hidden_points_do_not_change_fitted_openpose(self):
+        points = np.full((70, 2), 50.0)
+        points[sr.NOSE] = (30.0, 30.0)
+        points[sr.LEFT_ANKLE] = (70.0, 70.0)
+        valid = np.ones(70, dtype=bool)
+        # 足の6点と補助点の6点をそれぞれ動かしても、描画結果は不変。
+        for mode in ("shrink_to_fit", "fit_exactly"):
+            baseline, baseline_scale = sr.fit_projected(
+                points, valid, 100, 100, mode, margin=16)
+            for index in (*range(15, 21), *range(63, 69)):
+                with self.subTest(mode=mode, hidden_index=index):
+                    changed = points.copy()
+                    changed[index] = (1000.0, -2000.0)
+                    fitted, scale = sr.fit_projected(
+                        changed, valid, 100, 100, mode, margin=16)
+                    self.assertEqual(scale, baseline_scale)
+                    self.assertEqual(
+                        sr.to_pose_keypoint(fitted, valid, 100, 100),
+                        sr.to_pose_keypoint(baseline, valid, 100, 100),
+                    )
+
+    def test_outside_body_and_hand_points_still_trigger_fit(self):
+        # 画面外でも、出力する肘・手首・指先は必ず範囲計算に含める。
+        for index in (sr.LEFT_ELBOW, sr.RIGHT_WRIST, 21, 42):
+            for mode in ("shrink_to_fit", "fit_exactly"):
+                with self.subTest(index=index, mode=mode):
+                    points = np.full((70, 2), 50.0)
+                    points[index] = (200.0, 50.0)
+                    valid = np.ones(70, dtype=bool)
+                    fitted, scale = sr.fit_projected(
+                        points, valid, 100, 100, mode, margin=16)
+                    self.assertAlmostEqual(scale, 68.0 / 150.0)
+                    np.testing.assert_allclose(fitted[index], (84.0, 50.0))
+                    np.testing.assert_allclose(fitted[sr.NOSE], (16.0, 50.0))
+
+    def test_fit_does_nothing_when_only_hidden_points_are_valid(self):
+        points = np.full((70, 2), 1000.0)
+        valid = np.zeros(70, dtype=bool)
+        valid[15:21] = True
+        valid[63:69] = True
+        for mode in ("shrink_to_fit", "fit_exactly"):
+            with self.subTest(mode=mode):
+                fitted, scale = sr.fit_projected(points, valid, 100, 100, mode)
+                self.assertEqual(scale, 1.0)
+                np.testing.assert_array_equal(fitted, points)
+
+    def test_invalid_output_point_does_not_affect_fit_and_off_is_unchanged(self):
+        points = np.full((70, 2), 50.0)
+        points[sr.NOSE] = (30.0, 30.0)
+        points[sr.LEFT_ANKLE] = (70.0, 70.0)
+        points[sr.RIGHT_WRIST] = (10000.0, -10000.0)
+        valid = np.ones(70, dtype=bool)
+        valid[sr.RIGHT_WRIST] = False
+        fitted, scale = sr.fit_projected(
+            points, valid, 100, 100, "fit_exactly", margin=16)
+        self.assertAlmostEqual(scale, 68.0 / 40.0)
+        np.testing.assert_allclose(fitted[sr.NOSE], (16.0, 16.0))
+        valid[:] = True
+        fitted, scale = sr.fit_projected(points, valid, 100, 100, "off")
+        self.assertEqual(scale, 1.0)
+        np.testing.assert_array_equal(fitted, points)
+
     def test_node_accepts_sam3d_output_and_returns_pose_keypoint(self):
         node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         node = node_class()

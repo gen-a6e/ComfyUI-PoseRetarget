@@ -156,6 +156,12 @@ LEFT_HAND_FROM_MHR70 = (
     61, 60, 59, 58,
 )
 
+# fitの範囲は、実際にOpenPoseへ出力する点だけで決める。
+# 足先・かかと・補助点は描かれないため、余白や縮小率へ影響させない。
+OPENPOSE_FROM_MHR70 = tuple(sorted(set(
+    COCO18_FROM_MHR70 + LEFT_HAND_FROM_MHR70 + RIGHT_HAND_FROM_MHR70
+)))
+
 
 def as_numpy(value, name):
     """torchをimportせず、numpy配列やTensor風オブジェクトをnumpyへ変換する。"""
@@ -611,19 +617,24 @@ def projected_difference(first, first_valid, second, second_valid, indices):
 
 
 def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16):
-    """縦横比を維持したまま、有効な2D点をcanvas内へ収める。"""
+    """出力する体・手の有効点を基準に、縦横比を保ってcanvas内へ収める。"""
     points = np.asarray(points, dtype=np.float64).copy()
     if mode == "off" or not np.any(valid):
         return points, 1.0
     if mode not in {"shrink_to_fit", "fit_exactly"}:
         raise ValueError(f"unknown fit mode: {mode}")
 
-    subset = points[valid]
+    fit_indices = np.asarray(OPENPOSE_FROM_MHR70, dtype=np.int64)
+    fit_indices = fit_indices[np.asarray(valid, dtype=bool)[fit_indices]]
+    if not fit_indices.size:
+        # 描画できる点がない場合、補助点だけで拡大・移動しない。
+        return points, 1.0
+    subset = points[fit_indices]
     lo = subset.min(axis=0)
     hi = subset.max(axis=0)
     if mode == "shrink_to_fit" and (
             lo[0] >= 0 and lo[1] >= 0 and hi[0] <= width and hi[1] <= height):
-        # すでに全点が収まっている場合は、位置やサイズを一切変えない。
+        # 出力する有効点が収まっていれば、位置やサイズを一切変えない。
         return points, 1.0
 
     max_margin = max(0.0, min(width, height) * 0.5 - 1.0)
@@ -636,6 +647,7 @@ def fit_projected(points, valid, width, height, mode="shrink_to_fit", margin=16)
         scale = min(1.0, scale)
     center = (lo + hi) * 0.5
     target_center = np.array([width * 0.5, height * 0.5], dtype=np.float64)
+    # 範囲計算から除外した点にも同じ変換を適用し、座標系は揃えておく。
     points[valid] = (points[valid] - center) * scale + target_center
     return points, scale
 
