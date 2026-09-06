@@ -516,6 +516,88 @@ class SAM3DRetargetTests(unittest.TestCase):
             report,
         )
 
+    def test_optional_data_missing_does_not_change_primary_outputs(self):
+        node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        def run(reference, driving):
+            return node.run(reference, driving, image,
+                            "off", 1., 1., 1., 1., 1., "off", 16)
+        baseline = run(sam_output(), sam_output())
+        # 片側だけの欠損、rawのみの欠損、全補足情報の欠損を組み合わせる。
+        for ref_missing in (False, True):
+            for drive_missing in (False, True):
+                for raw_missing in (False, True):
+                    with self.subTest(reference=ref_missing,
+                                      driving=drive_missing, raw=raw_missing):
+                        reference, driving = sam_output(), sam_output()
+                        if ref_missing:
+                            del reference["keypoints_3d_full"]
+                        if drive_missing:
+                            del driving["keypoints_3d_full"]
+                        if raw_missing:
+                            del driving["raw_output"]["pred_keypoints_2d"]
+                        result = run(reference, driving)
+                        self.assertEqual(result[:2], baseline[:2])
+                        for side, missing in (("reference", ref_missing),
+                                              ("driving", drive_missing)):
+                            self.assertEqual(
+                                f"{side}_height=unavailable" in result[2], missing)
+                            self.assertEqual(
+                                f"WARNING: {side}_height unavailable:" in result[2],
+                                missing)
+                        if raw_missing:
+                            self.assertEqual(result[3], [{
+                                "canvas_width": 384, "canvas_height": 512,
+                                "people": [],
+                            }])
+                            self.assertIn("sam_raw_driving_pose_keypoint unavailable:",
+                                          result[2])
+                            self.assertIn("right_hand_raw2d_vs_reprojected: unavailable",
+                                          result[2])
+                        else:
+                            self.assertEqual(result[3], baseline[3])
+
+    def test_unusable_optional_arrays_do_not_block_pose_generation(self):
+        node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        def run(reference, driving):
+            return node.run(reference, driving, image,
+                            "off", 1., 1., 1., 1., 1., "off", 16)
+        baseline = run(sam_output(), sam_output())
+        cases = (
+            (np.zeros((70, 3)), np.zeros((17, 2))),
+            (np.full((308, 3), np.nan), np.full((70, 2), np.nan)),
+            ("not numeric", "not numeric"),
+        )
+        for full, raw in cases:
+            with self.subTest(full_shape=np.shape(full), raw_shape=np.shape(raw)):
+                reference, driving = sam_output(), sam_output()
+                reference["keypoints_3d_full"] = full
+                driving["raw_output"]["pred_keypoints_2d"] = raw
+                result = run(reference, driving)
+                self.assertEqual(result[:2], baseline[:2])
+                self.assertIn("reference_height=unavailable", result[2])
+                self.assertNotIn("driving_height=unavailable", result[2])
+                self.assertEqual(result[3][0]["people"], [])
+
+    def test_missing_optional_data_does_not_hide_required_input_errors(self):
+        node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+        image = np.zeros((1, 512, 384, 3), dtype=np.float32)
+        for field, value, expected in (
+                ("joints", None, "missing joints"),
+                ("joints", np.full((70, 3), np.nan), "NaN"),
+                ("camera", None, "missing camera"),
+                ("focal_length", np.array([0.]), "must be positive")):
+            with self.subTest(field=field, expected=expected):
+                reference, driving = sam_output(), sam_output()
+                del reference["keypoints_3d_full"]
+                del driving["keypoints_3d_full"]
+                del driving["raw_output"]["pred_keypoints_2d"]
+                driving[field] = value
+                with self.assertRaisesRegex(ValueError, expected):
+                    node.run(reference, driving, image,
+                             "off", 1., 1., 1., 1., 1., "off", 16)
+
     def test_node_schema_matches_existing_comfyui_sam3dbody_output_type(self):
         package = load_package()
         self.assertEqual(

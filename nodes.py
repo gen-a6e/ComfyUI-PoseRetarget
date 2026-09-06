@@ -15,6 +15,17 @@ from .sam3d_retarget import (
 )
 
 
+def _height_report(sam3d, points, side, warnings):
+    """補足の身長計測だけを省略できるようにし、骨格の必須検証とは分離する。"""
+    try:
+        head_top, index = extract_head_top(sam3d, points)
+        height = estimated_height(points, head_top)
+    except ValueError as exc:
+        warnings.append(f"{side}_height unavailable: {exc}")
+        return "unavailable", "unavailable"
+    return f"{height:.3f} m", index
+
+
 class SAM3DBodyPoseRetarget:
     """referenceの体型とdrivingのポーズを3D空間で合成するComfyUIノード。"""
 
@@ -87,15 +98,14 @@ class SAM3DBodyPoseRetarget:
         reference = extract_mhr70(reference_sam3d)
         driving = extract_mhr70(driving_sam3d)
 
-        # MHR70に含まれない頭頂点を全308点から取得し、概算身長を計測する。
-        reference_head_top, reference_head_top_index = extract_head_top(
-            reference_sam3d, reference
+        # 身長は補足情報。全308点が欠ける・使用不能でも骨長転送は続行する。
+        warnings = []
+        reference_height_note, reference_head_top_index = _height_report(
+            reference_sam3d, reference, "reference", warnings
         )
-        driving_head_top, driving_head_top_index = extract_head_top(
-            driving_sam3d, driving
+        driving_height_note, driving_head_top_index = _height_report(
+            driving_sam3d, driving, "driving", warnings
         )
-        reference_height = estimated_height(reference, reference_head_top)
-        driving_height = estimated_height(driving, driving_head_top)
 
         # 2. referenceの各骨長とdrivingの各ボーン方向を合成する。
         # ここではまだ3D座標のままで、カメラ投影やcanvas調整は行わない。
@@ -137,27 +147,38 @@ class SAM3DBodyPoseRetarget:
             driving_projected, driving_valid, width, height)
 
         # SAM内部で計算済みの2D点も再投影せず出力する。3D再投影との差を診断する用途。
-        raw_driving_projected, raw_driving_valid = extract_mhr70_2d(
-            driving_sam3d
-        )
-        raw_driving_valid &= driving_valid
-        raw_driving_output = to_pose_keypoint(
-            raw_driving_projected, raw_driving_valid, width, height
-        )
-        right_hand_difference = projected_difference(
-            raw_driving_projected,
-            raw_driving_valid,
-            driving_projected,
-            driving_valid,
-            RIGHT_HAND_FROM_MHR70,
-        )
-        left_hand_difference = projected_difference(
-            raw_driving_projected,
-            raw_driving_valid,
-            driving_projected,
-            driving_valid,
-            LEFT_HAND_FROM_MHR70,
-        )
+        # 診断不能時もcanvas情報は保持するが、人物・座標は捏造しない。
+        raw_driving_output = [{
+            "canvas_width": width, "canvas_height": height, "people": []
+        }]
+        right_hand_difference = left_hand_difference = {"count": 0}
+        try:
+            raw_driving_projected, raw_driving_valid = extract_mhr70_2d(
+                driving_sam3d
+            )
+            if not raw_driving_valid.any():
+                raise ValueError("SAM raw 2D keypoints contain no finite points")
+        except ValueError as exc:
+            warnings.append(f"sam_raw_driving_pose_keypoint unavailable: {exc}")
+        else:
+            raw_driving_valid &= driving_valid
+            raw_driving_output = to_pose_keypoint(
+                raw_driving_projected, raw_driving_valid, width, height
+            )
+            right_hand_difference = projected_difference(
+                raw_driving_projected,
+                raw_driving_valid,
+                driving_projected,
+                driving_valid,
+                RIGHT_HAND_FROM_MHR70,
+            )
+            left_hand_difference = projected_difference(
+                raw_driving_projected,
+                raw_driving_valid,
+                driving_projected,
+                driving_valid,
+                LEFT_HAND_FROM_MHR70,
+            )
 
         # 5. 概算身長、倍率、生成前後の実骨長を確認できる文字列にまとめる。
         valid_depth = depth[valid]
@@ -171,8 +192,8 @@ class SAM3DBodyPoseRetarget:
         )
         report = (
             "SAM 3D Body retargeted one MHR70 skeleton; "
-            f"reference_height={reference_height:.3f} m; "
-            f"driving_height={driving_height:.3f} m; "
+            f"reference_height={reference_height_note}; "
+            f"driving_height={driving_height_note}; "
             f"size_source={details['size_source']}; "
             f"scale={details['base_scale']:.3f}; "
             f"fit_scale={fit_scale:.3f}; "
@@ -200,6 +221,8 @@ class SAM3DBodyPoseRetarget:
             f"reference={reference_head_top_index}, "
             f"driving={driving_head_top_index}."
         )
+        for warning in warnings:
+            report += f" WARNING: {warning}."
         invalid_count = int((~valid).sum())
         if invalid_count:
             # カメラより後ろにある点は2Dへ投影できず、confidence 0になる。
