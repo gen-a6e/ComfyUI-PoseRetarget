@@ -601,7 +601,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertIn("size_source=reference", report)
         self.assertIn("reference_height=", report)
         self.assertIn("driving_height=", report)
-        self.assertIn("Lengths reference->generated", report)
+        self.assertIn("MHR landmark distances reference->generated", report)
         self.assertIn("shoulder_to_nose:", report)
 
     def test_node_uses_r126_for_height_report_without_dense_points(self):

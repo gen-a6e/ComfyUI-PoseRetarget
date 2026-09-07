@@ -1,7 +1,7 @@
 """SAM 3D BodyのMHR70を使って、体型とポーズを3Dで合成する計算モジュール。
 
 処理の流れ:
-1. ``SAM3D_OUTPUT``からMHR70座標と、中心・肩に使うMHR127内部リグを取得する。
+1. ``SAM3D_OUTPUT``から出力用のMHR70と、骨長転送用のMHR127内部リグを取得する。
 2. referenceの3D骨長を取得し、必要なら左右の推定誤差を平均化する。
 3. 中心・肩・四肢の各区間はdrivingの方向を使い、顔はR113基準で一体回転する。
 4. driving側のカメラで3D座標を2Dピクセル座標へ投影する。
@@ -14,6 +14,11 @@ ComfyUIとの接続部分を薄く保ち、3D計算を単体テストできる�
 from __future__ import annotations
 
 import numpy as np
+
+try:
+    from .rig_landmarks import place_landmarks
+except ImportError:  # standalone numerical use
+    from rig_landmarks import place_landmarks
 
 
 EPS = 1e-8
@@ -346,7 +351,7 @@ def _transfer_offset(reference_vector, driving_vector, scale, name):
 
 
 def _place_center_rig(reference, driving, reference_rig, driving_rig, root,
-                      uniform, torso_scale, neck_scale, head_scale):
+                      uniform, torso_scale, neck_scale, head_scale, include_neck_landmark=True):
     """骨盤から頭頂まで7区間を転送し、首69の位置も返す。入力は変更しない。"""
     # 肩点との一致も検証し、別座標系・別人物のリグを胴体へ混ぜない。
     ref = _validate_shoulder_rig(reference_rig, reference, "reference", False)
@@ -371,9 +376,11 @@ def _place_center_rig(reference, driving, reference_rig, driving_rig, root,
         generated[child] = (generated[parent] + direction / np.linalg.norm(direction)
                             * length * uniform * float(part_scale))
     # MHR69はR110そのものではない。既存の首点へのオフセットを別に転送する。
-    neck = generated[110] + _transfer_offset(
-        reference[NECK] - ref[110], driving[NECK] - drv[110],
-        uniform * float(neck_scale), "R110->MHR69")
+    neck = None
+    if include_neck_landmark:
+        neck = generated[110] + _transfer_offset(
+            reference[NECK] - ref[110], driving[NECK] - drv[110],
+            uniform * float(neck_scale), "R110->MHR69")
     return generated, lengths, neck
 
 
@@ -527,6 +534,48 @@ def _align_to_driving(points, driving):
     return points + translation, translation, generated_bottom, driving_bottom
 
 
+def _retarget_full_rig(reference, driving, reference_rig, driving_rig, symmetry, scales):
+    """Rig lengths first, then MHR70 output landmarks; no MHR limb lengths used."""
+    reference_rig = as_numpy(reference_rig, 'reference MHR127')
+    driving_rig = as_numpy(driving_rig, 'driving MHR127')
+    u = scales['uniform_scale']
+    center, center_lengths, _ = _place_center_rig(
+        reference, driving, reference_rig, driving_rig, hip_center(driving),
+        u, scales['torso_scale'], scales['neck_scale'], scales['head_scale'],
+        include_neck_landmark=False)
+    temporary = driving.copy()
+    shoulders, shoulder_lengths, _ = _place_rig_shoulders(
+        temporary, reference, driving, reference_rig, driving_rig,
+        symmetry, u, scales['torso_scale'], scales['shoulder_width_scale'], center[37])
+    output, rig, lengths = place_landmarks(
+        reference, driving, reference_rig, driving_rig, {**center, **shoulders},
+        symmetry, scales)
+    rotation, source = _face_rotation(reference, driving)
+    output[:5] = rig[113] + (reference[:5] - reference_rig[113]) @ rotation * u * scales['head_scale']
+    output, shift, bottom, driving_bottom = _align_to_driving(output, driving)
+    rig = {i: v + shift for i, v in rig.items()}
+    lengths.update(center_lengths)
+    lengths.update(shoulder_lengths)
+    return output, {
+        'base_scale': u, 'size_source': 'reference',
+        'skeleton_mode': 'full_rig', 'skeleton_warning': None,
+        'landmark_mode': 'position_frame_offset_approximation',
+        'rig_points': rig, 'rig_reference_lengths': lengths,
+        'face_rotation_source': source, 'face_anchor': 'R113',
+        'center_mode': 'rig_chain', 'center_warning': None,
+        'center_rig_points': {i: rig[i] for i in center},
+        'center_reference_lengths': center_lengths,
+        'shoulder_mode': 'rig_chain', 'shoulder_warning': None,
+        'shoulder_pose_scale': None, 'shoulder_anchor_length': None,
+        'shoulder_rig_points': {i: rig[i] for i in shoulders},
+        'shoulder_reference_lengths': shoulder_lengths,
+        'alignment_translation': shift, 'generated_bottom_index': bottom,
+        'driving_bottom_index': driving_bottom,
+        'reference_measurements': body_measurements(reference),
+        'generated_measurements': body_measurements(output),
+    }
+
+
 def retarget_mhr70(reference, driving, reference_symmetry="average",
                    uniform_scale=1.0,
                    leg_scale=1.0, arm_scale=1.0, head_scale=1.0,
@@ -541,6 +590,25 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     driving = np.asarray(driving, dtype=np.float64)
     if reference.shape != (MHR70_COUNT, 3) or driving.shape != (MHR70_COUNT, 3):
         raise ValueError("reference and driving joints must both have shape (70, 3)")
+    if not (np.isfinite(reference).all() and np.isfinite(driving).all()):
+        raise ValueError('MHR70 contains non-finite coordinates')
+    if reference_symmetry not in ('off', 'average'):
+        raise ValueError(f'unknown reference symmetry mode: {reference_symmetry}')
+    scales = dict(uniform_scale=uniform_scale, leg_scale=leg_scale, arm_scale=arm_scale,
+                  head_scale=head_scale, hand_scale=hand_scale, torso_scale=torso_scale,
+                  shoulder_width_scale=shoulder_width_scale, hip_width_scale=hip_width_scale,
+                  neck_scale=neck_scale, upper_arm_scale=upper_arm_scale,
+                  forearm_scale=forearm_scale, thigh_scale=thigh_scale, shin_scale=shin_scale)
+    scales = {key: float(value) for key, value in scales.items()}
+    if any(not np.isfinite(value) or value <= 0 for value in scales.values()):
+        raise ValueError('scales must be finite and positive')
+    try:
+        return _retarget_full_rig(reference, driving, reference_rig, driving_rig,
+                                  reference_symmetry, scales)
+    except ValueError as exc:
+        # Atomic fallback: no newly reconstructed limb or attachment leaks into
+        # the previous mixed implementation. Never label that path as full_rig.
+        skeleton_warning = str(exc)
 
     # SAM 3D Bodyが推定したreferenceの3D骨長を、正規化せず直接使用する。
     # 出力骨長は「reference骨長 × uniform_scale × 部位別scale」。
@@ -693,6 +761,11 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
 
     # 呼び出し側でreferenceと生成後の実骨長を比較できるようにする。
     details = {
+        "skeleton_mode": "legacy_mixed_fallback",
+        "skeleton_warning": skeleton_warning,
+        "landmark_mode": "legacy_mhr_edges",
+        "rig_points": {},
+        "rig_reference_lengths": {},
         "base_scale": uniform,
         "size_source": "reference",
         "face_rotation_source": face_rotation_source,

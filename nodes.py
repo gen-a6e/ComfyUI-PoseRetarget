@@ -143,6 +143,9 @@ class SAM3DBodyPoseRetarget:
             reference_rig=reference_rig,
             driving_rig=driving_rig,
         )
+        if details['skeleton_warning']:
+            warnings.append('full rig unavailable; using previous mixed implementation: '
+                            + details['skeleton_warning'])
         if details["center_warning"]:
             warnings.append(
                 f"center rig unavailable; using legacy torso/face: {details['center_warning']}"
@@ -224,6 +227,8 @@ class SAM3DBodyPoseRetarget:
             f"reference_height={reference_height_note}; "
             f"driving_height={driving_height_note}; "
             f"size_source={details['size_source']}; "
+            f"skeleton_mode={details['skeleton_mode']}; "
+            f"landmark_mode={details['landmark_mode']}; "
             f"face_rotation={details['face_rotation_source']}; "
             f"center_mode={details['center_mode']}; "
             f"face_anchor={details['face_anchor']}; "
@@ -231,8 +236,16 @@ class SAM3DBodyPoseRetarget:
             f"scale={details['base_scale']:.3f}; "
             f"fit_scale={fit_scale:.3f}; "
             f"camera_depth={depth_note}."
-            f" Lengths reference->generated (m): {length_note}."
+            f" MHR landmark distances reference->generated (m): {length_note}."
         )
+        if details['skeleton_mode'] == 'full_rig':
+            rig = details['rig_points']
+            segments = ', '.join(
+                f'R{a}->R{b}:{length:.4f}->{float(((rig[b]-rig[a])**2).sum()**.5):.4f}'
+                for (a, b), length in details['rig_reference_lengths'].items())
+            report += f' Rig lengths effective_reference->generated (m): {segments}.'
+            report += (' Surface landmarks use approximate position-derived frame offsets; '
+                       'not regenerated from a deformed mesh; roll/skin deformation may differ.')
         shift = details["alignment_translation"]
         report += (
             " Alignment: xz=nose, y=lowest_body_point; "
