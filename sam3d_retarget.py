@@ -1,7 +1,7 @@
 """SAM 3D BodyのMHR70を使って、体型とポーズを3Dで合成する計算モジュール。
 
 処理の流れ:
-1. ``SAM3D_OUTPUT``からreferenceとdrivingのMHR70座標を取得する。
+1. ``SAM3D_OUTPUT``からMHR70座標と、肩に使うMHR127内部リグを取得する。
 2. referenceの3D骨長を取得し、必要なら左右の推定誤差を平均化する。
 3. drivingのボーン方向・肩の上下・人物位置へreferenceの実骨長を適用する。
 4. driving側のカメラで3D座標を2Dピクセル座標へ投影する。
@@ -32,6 +32,11 @@ LEFT_ANKLE, RIGHT_ANKLE = 13, 14
 LEFT_HEEL, RIGHT_HEEL = 17, 20
 RIGHT_WRIST, LEFT_WRIST = 41, 62
 NECK = 69
+
+# MHR127内部リグ。MHR70の番号と混同しない。R39=右肩6、R75=左肩5。
+RIG_SPINE3 = 37
+SHOULDER_RIG_EDGES = ((37, 38), (38, 39), (37, 74), (74, 75))
+SHOULDER_RIG_POINTS = (37, 38, 39, 74, 75)
 FACE_POINTS = (NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR)
 # 実身体点＋首。63〜68の補助点は最下点判定に使わない（足先・手指は含める）。
 ALIGNMENT_POINTS = tuple(range(63)) + (NECK,)
@@ -256,6 +261,68 @@ def extract_head_top(output):
     return head.copy(), 126
 
 
+def extract_shoulder_rig(output):
+    """肩の再構成用にMHR127を取り出す。未使用点の欠損はここでは判定しない。"""
+    if not isinstance(output, dict):
+        raise ValueError("SAM3D input must be a SAM3D_OUTPUT dictionary")
+    value = output.get("joint_coords")
+    if value is None:
+        raw = output.get("raw_output")
+        value = raw.get("pred_joint_coords") if isinstance(raw, dict) else None
+    points = as_numpy(value, "MHR127 joint_coords for shoulder rig")
+    while points.ndim > 2 and points.shape[0] == 1:
+        points = points[0]
+    if points.shape != (127, 3):
+        raise ValueError(f"shoulder rig requires MHR127 (127, 3); received {points.shape}")
+    return points.copy()
+
+
+def _validate_shoulder_rig(rig, body, side):
+    """別人物・別座標系のリグや潰れた区間を、MHR70へ混ぜないための検証。"""
+    points = as_numpy(rig, f"{side} shoulder rig")
+    if points.shape != (127, 3):
+        raise ValueError(f"{side} shoulder rig must have shape (127, 3)")
+    if not np.isfinite(points[list(SHOULDER_RIG_POINTS)]).all():
+        raise ValueError(f"{side} shoulder rig contains non-finite shoulder coordinates")
+    # 現行SAMのMHR70肩点は、それぞれこの内部関節そのもの。
+    for index, shoulder in ((39, RIGHT_SHOULDER), (75, LEFT_SHOULDER)):
+        if not np.allclose(points[index], body[shoulder], rtol=1e-5, atol=1e-6):
+            raise ValueError(f"{side} R{index} does not match MHR70 shoulder {shoulder}")
+    for parent, child in SHOULDER_RIG_EDGES:
+        if np.linalg.norm(points[child] - points[parent]) <= EPS:
+            raise ValueError(f"{side} shoulder segment R{parent}->R{child} is degenerate")
+    # R37は首69を基準に配置するので、その向きも必要。
+    if np.linalg.norm(points[RIG_SPINE3] - body[NECK]) <= EPS:
+        raise ValueError(f"{side} shoulder anchor MHR69->R37 is degenerate")
+    return points
+
+
+def _place_rig_shoulders(output, reference, driving, reference_rig, driving_rig,
+                         symmetry, uniform, torso_scale, width_scale):
+    """首69→R37を起点に、背骨→鎖骨起点→肩の4区間を再構成する。"""
+    ref = _validate_shoulder_rig(reference_rig, reference, "reference")
+    drv = _validate_shoulder_rig(driving_rig, driving, "driving")
+    lengths = {edge: float(np.linalg.norm(ref[edge[1]] - ref[edge[0]]))
+               for edge in SHOULDER_RIG_EDGES}
+    if symmetry == "average":
+        for right, left in (((37, 38), (37, 74)), ((38, 39), (74, 75))):
+            lengths[right] = lengths[left] = (lengths[right] + lengths[left]) * .5
+
+    # 首69の生成位置は既存の胴体計算を使い、そこからR37までの区間を転送する。
+    # 肩の4区間とは分け、首→上部背骨の距離にはtorso_scaleを適用する。
+    anchor_vector = drv[RIG_SPINE3] - driving[NECK]
+    anchor_length = float(np.linalg.norm(ref[RIG_SPINE3] - reference[NECK]))
+    generated = {RIG_SPINE3: output[NECK] + anchor_vector / np.linalg.norm(anchor_vector)
+                 * anchor_length * uniform * float(torso_scale)}
+    for parent, child in SHOULDER_RIG_EDGES:
+        direction = drv[child] - drv[parent]
+        generated[child] = (generated[parent] + direction / np.linalg.norm(direction)
+                            * lengths[(parent, child)] * uniform * float(width_scale))
+    output[RIGHT_SHOULDER] = generated[39]
+    output[LEFT_SHOULDER] = generated[75]
+    return generated, lengths, anchor_length
+
+
 def hip_center(points):
     """左右の股関節の中点を返す。生成骨格のrootとして使用する。"""
     return (points[LEFT_HIP] + points[RIGHT_HIP]) * 0.5
@@ -413,7 +480,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
                    shoulder_width_scale=1.0, hip_width_scale=1.0,
                    neck_scale=1.0, upper_arm_scale=1.0,
                    forearm_scale=1.0, thigh_scale=1.0,
-                   shin_scale=1.0):
+                   shin_scale=1.0, reference_rig=None, driving_rig=None):
     """referenceの3D骨長とdrivingの3D方向・ポーズを合成する。"""
     # 入力をfloat64へ統一し、全関節が期待どおり70点あることを先に保証する。
     reference = np.asarray(reference, dtype=np.float64)
@@ -457,30 +524,32 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     )
     output[NECK] = root + torso_direction * torso_length
 
-    # 肩: 左右を結ぶ軸の傾きはdriving、肩幅はreferenceから移す。
-    shoulder_axis = _unit_direction(
-        driving[LEFT_SHOULDER] - driving[RIGHT_SHOULDER],
-        reference[LEFT_SHOULDER] - reference[RIGHT_SHOULDER],
-    )
-    shoulder_width = (
-        reference_measurements["shoulder_width"] * uniform
-        * float(shoulder_width_scale)
-    )
-    # 両肩の中点を首へ固定すると「肩を落とす／すくめる」ポーズが消える。
-    # そこで肩中央の首に対する上下・奥行きを、胴体長比でreference体格へ換算する。
-    driving_shoulder_offset = shoulder_center(driving) - driving[NECK]
-    driving_torso = driving_measurements["torso"]
-    shoulder_pose_scale = uniform
-    if np.isfinite(driving_torso) and driving_torso > EPS:
-        shoulder_pose_scale *= reference_measurements["torso"] / driving_torso
-    output_shoulder_center = (
-        output[NECK]
-        + driving_shoulder_offset * shoulder_pose_scale
-    )
-    output[LEFT_SHOULDER] = (
-        output_shoulder_center + shoulder_axis * shoulder_width * 0.5)
-    output[RIGHT_SHOULDER] = (
-        output_shoulder_center - shoulder_axis * shoulder_width * 0.5)
+    # 肩: 端から端の幅を固定せず、背骨→鎖骨起点→肩の4区間を転送する。
+    # リグのない旧データは従来方式へ戻し、reportで明示する。
+    shoulder_mode = "rig_chain"
+    shoulder_warning = None
+    shoulder_pose_scale = None
+    shoulder_rig_points, shoulder_lengths, shoulder_anchor_length = {}, {}, None
+    try:
+        shoulder_rig_points, shoulder_lengths, shoulder_anchor_length = _place_rig_shoulders(
+            output, reference, driving, reference_rig, driving_rig,
+            reference_symmetry, uniform, torso_scale, shoulder_width_scale)
+    except ValueError as exc:
+        shoulder_mode = "legacy_width_fallback"
+        shoulder_warning = str(exc)
+        shoulder_axis = _unit_direction(
+            driving[LEFT_SHOULDER] - driving[RIGHT_SHOULDER],
+            reference[LEFT_SHOULDER] - reference[RIGHT_SHOULDER])
+        shoulder_width = (reference_measurements["shoulder_width"] * uniform
+                          * float(shoulder_width_scale))
+        driving_shoulder_offset = shoulder_center(driving) - driving[NECK]
+        driving_torso = driving_measurements["torso"]
+        shoulder_pose_scale = uniform
+        if np.isfinite(driving_torso) and driving_torso > EPS:
+            shoulder_pose_scale *= reference_measurements["torso"] / driving_torso
+        output_shoulder_center = output[NECK] + driving_shoulder_offset * shoulder_pose_scale
+        output[LEFT_SHOULDER] = output_shoulder_center + shoulder_axis * shoulder_width * .5
+        output[RIGHT_SHOULDER] = output_shoulder_center - shoulder_axis * shoulder_width * .5
 
     # 腕と脚: 各ボーンの向きはdriving、長さはreferenceの実骨長を使う。
     # 大分類のarm/leg倍率と、上腕・前腕・腿・脛の詳細倍率は乗算する。
@@ -550,6 +619,9 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
 
     # 形状が完成してから全点を同量だけ移す。足固定や関節方向の補正は行わない。
     output, translation, generated_bottom, driving_bottom = _align_to_driving(output, driving)
+    # 診断用の内部点も、返すMHR70と同じ最終座標系へ移す。
+    shoulder_rig_points = {index: point + translation
+                           for index, point in shoulder_rig_points.items()}
 
     # 呼び出し側でreferenceと生成後の実骨長を比較できるようにする。
     details = {
@@ -560,6 +632,11 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
         "generated_bottom_index": generated_bottom,
         "driving_bottom_index": driving_bottom,
         "shoulder_pose_scale": shoulder_pose_scale,
+        "shoulder_mode": shoulder_mode,
+        "shoulder_warning": shoulder_warning,
+        "shoulder_rig_points": shoulder_rig_points,
+        "shoulder_reference_lengths": shoulder_lengths,
+        "shoulder_anchor_length": shoulder_anchor_length,
         "reference_measurements": reference_measurements,
         "generated_measurements": body_measurements(output),
     }
