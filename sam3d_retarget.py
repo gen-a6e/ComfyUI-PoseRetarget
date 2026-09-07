@@ -33,6 +33,8 @@ LEFT_HEEL, RIGHT_HEEL = 17, 20
 RIGHT_WRIST, LEFT_WRIST = 41, 62
 NECK = 69
 FACE_POINTS = (NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR)
+# 実身体点＋首。63〜68の補助点は最下点判定に使わない（足先・手指は含める）。
+ALIGNMENT_POINTS = tuple(range(63)) + (NECK,)
 
 
 # MHR70には単独の腰中心がないため、左右の股関節の中点を仮想rootとして使う。
@@ -393,6 +395,17 @@ def _face_rotation(reference, driving):
     return u @ correction @ vt, "kabsch_face5"
 
 
+def _align_to_driving(points, driving):
+    """形状を保った平行移動で、鼻X/Zと最下点Yをdrivingに合わせる。"""
+    indices = np.asarray(ALIGNMENT_POINTS)
+    generated_bottom = int(indices[np.argmax(points[indices, 1])])
+    driving_bottom = int(indices[np.argmax(driving[indices, 1])])
+    # SAMの投影用座標はY正方向が下。カメラ並進を加えてもこの差は変わらない。
+    translation = driving[NOSE] - points[NOSE]
+    translation[1] = driving[driving_bottom, 1] - points[generated_bottom, 1]
+    return points + translation, translation, generated_bottom, driving_bottom
+
+
 def retarget_mhr70(reference, driving, reference_symmetry="average",
                    uniform_scale=1.0,
                    leg_scale=1.0, arm_scale=1.0, head_scale=1.0,
@@ -415,9 +428,9 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     reference_measurements = body_measurements(reference)
     driving_measurements = body_measurements(driving)
 
-    # drivingを土台にすると、明示的に再配置しない補助点も元の位置を維持できる。
+    # drivingを土台にし、補助点は再構成しない。最後の全体平行移動は補助点にも適用する。
     output = driving.copy()
-    # 人物の配置はdriving基準なので、腰中心そのものは移動させない。
+    # 再構成中はdrivingの腰中心を仮の起点にし、最後に鼻・最下点で位置を合わせる。
     root = hip_center(driving)
 
     # 腰: 左右を別々の骨として伸ばすと中心がずれるため、腰中心から対称に配置する。
@@ -535,11 +548,17 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
             * float(arm_scale) * float(hand_scale),
         )
 
+    # 形状が完成してから全点を同量だけ移す。足固定や関節方向の補正は行わない。
+    output, translation, generated_bottom, driving_bottom = _align_to_driving(output, driving)
+
     # 呼び出し側でreferenceと生成後の実骨長を比較できるようにする。
     details = {
         "base_scale": uniform,
         "size_source": "reference",
         "face_rotation_source": face_rotation_source,
+        "alignment_translation": translation,
+        "generated_bottom_index": generated_bottom,
+        "driving_bottom_index": driving_bottom,
         "shoulder_pose_scale": shoulder_pose_scale,
         "reference_measurements": reference_measurements,
         "generated_measurements": body_measurements(output),

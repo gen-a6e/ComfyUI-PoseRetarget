@@ -208,6 +208,13 @@ class SAM3DBodyPoseRetarget:
             f"camera_depth={depth_note}."
             f" Lengths reference->generated (m): {length_note}."
         )
+        shift = details["alignment_translation"]
+        report += (
+            " Alignment: xz=nose, y=lowest_body_point; "
+            f"translation_xyz=({shift[0]:.4f}, {shift[1]:.4f}, {shift[2]:.4f}); "
+            f"lowest_indices generated={details['generated_bottom_index']}, "
+            f"driving={details['driving_bottom_index']}."
+        )
         for side, difference in (
             ("right", right_hand_difference),
             ("left", left_hand_difference),

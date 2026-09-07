@@ -110,6 +110,42 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(actual), expected_length, places=7)
         np.testing.assert_allclose(actual / np.linalg.norm(actual), (0.0, 0.0, -1.0))
 
+    def test_alignment_matches_nose_xz_and_lowest_y_after_retarget(self):
+        reference, driving = skeleton() * 1.6, skeleton()
+        driving += (0.4, -0.3, 0.7)
+        output, details = sr.retarget_mhr70(reference, driving, reference_symmetry="off")
+        np.testing.assert_allclose(output[sr.NOSE, [0, 2]], driving[sr.NOSE, [0, 2]])
+        self.assertAlmostEqual(output[list(sr.ALIGNMENT_POINTS), 1].max(),
+                               driving[list(sr.ALIGNMENT_POINTS), 1].max())
+        self.assertGreater(np.linalg.norm(details["alignment_translation"]), 0.1)
+
+    def test_alignment_is_translation_only_and_excludes_auxiliary_points(self):
+        points, driving = skeleton(), skeleton()
+        points[sr.NOSE] = (0.7, -0.8, 0.9)
+        # 生成側の手とdriving側のかかとがそれぞれの最下点。
+        points[sr.LEFT_WRIST, 1] = 3.0
+        driving[sr.RIGHT_HEEL, 1] = 2.0
+        points[63:69] = (0., 999., 0.)
+        driving[63:69] = (0., 888., 0.)
+        before, driving_before = points.copy(), driving.copy()
+        output, shift, generated_index, driving_index = sr._align_to_driving(points, driving)
+        np.testing.assert_allclose(shift, (-0.7, -1.0, -0.92))
+        self.assertEqual(generated_index, sr.LEFT_WRIST)
+        self.assertEqual(driving_index, sr.RIGHT_HEEL)
+        np.testing.assert_allclose(output - output[0], points - points[0], atol=1e-12)
+        np.testing.assert_array_equal(points, before)
+        np.testing.assert_array_equal(driving, driving_before)
+        # 足だけではなく、下に伸びた指先も対象にする。
+        driving[21, 1] = 4.0
+        _, _, _, driving_index = sr._align_to_driving(points, driving)
+        self.assertEqual(driving_index, 21)
+
+    def test_same_skeleton_alignment_needs_no_translation(self):
+        points = skeleton()
+        output, details = sr.retarget_mhr70(points, points, reference_symmetry="off")
+        np.testing.assert_allclose(details["alignment_translation"], 0., atol=1e-12)
+        np.testing.assert_allclose(output, points, atol=1e-12)
+
     def test_reference_measurements_survive_large_scale_and_side_rotation(self):
         reference = skeleton()
         reference[sr.LEFT_SHOULDER] = (0.34, -0.58, 0.0)
