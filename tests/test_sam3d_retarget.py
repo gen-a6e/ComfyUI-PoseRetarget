@@ -255,6 +255,71 @@ class SAM3DRetargetTests(unittest.TestCase):
                 msg=name,
             )
 
+    def test_face_recovers_known_rotation_with_size_and_translation_changes(self):
+        reference = skeleton()
+        reference[sr.LEFT_EYE] += (0.025, -0.01, -0.02)
+        reference[sr.RIGHT_EAR] += (-0.015, 0.005, 0.03)
+        # yaw/pitch/rollをまとめた既知の正回転。顔以外は動かさない。
+        rotation = np.array([[0., 0., 1.], [1., 0., 0.], [0., 1., 0.]])
+        face = list(sr.FACE_POINTS)
+        driving = skeleton()
+        driving[face] = (reference[face] - reference[sr.NOSE]) @ rotation.T * 2.2 + (0.3, -0.9, 0.2)
+        ref_before, drv_before = reference.copy(), driving.copy()
+        for symmetry in ("off", "average"):
+            output, details = sr.retarget_mhr70(
+                reference, driving, reference_symmetry=symmetry,
+                uniform_scale=1.2, head_scale=1.3)
+            expected = (reference[face] - reference[sr.NOSE]) @ rotation.T * 1.56
+            np.testing.assert_allclose(output[face] - output[sr.NOSE], expected, atol=1e-12)
+            self.assertEqual(details["face_rotation_source"], "kabsch_face5")
+        np.testing.assert_array_equal(reference, ref_before)
+        np.testing.assert_array_equal(driving, drv_before)
+
+    def test_driving_face_shape_does_not_change_reference_pairwise_distances(self):
+        reference, driving = skeleton(), skeleton()
+        driving[sr.LEFT_EYE] += (0.06, -0.08, 0.07)
+        driving[sr.RIGHT_EAR] += (-0.12, -0.02, -0.08)
+        output, _ = sr.retarget_mhr70(reference, driving, head_scale=1.4)
+        for a in sr.FACE_POINTS:
+            for b in sr.FACE_POINTS:
+                self.assertAlmostEqual(np.linalg.norm(output[a] - output[b]),
+                                       np.linalg.norm(reference[a] - reference[b]) * 1.4)
+
+    def test_neck_scale_moves_face_without_changing_its_internal_shape(self):
+        reference, driving = skeleton(), skeleton()
+        a, _ = sr.retarget_mhr70(reference, driving, neck_scale=0.8)
+        b, _ = sr.retarget_mhr70(reference, driving, neck_scale=1.4)
+        face = list(sr.FACE_POINTS)
+        self.assertGreater(np.linalg.norm(a[sr.NOSE] - b[sr.NOSE]), 0.1)
+        np.testing.assert_allclose(a[face] - a[sr.NOSE], b[face] - b[sr.NOSE], atol=1e-12)
+        np.testing.assert_allclose(a[face] - a[sr.NOSE],
+                                   reference[face] - reference[sr.NOSE], atol=1e-12)
+
+    def test_face_rotation_never_reflects_reference(self):
+        reference = skeleton()
+        driving = reference.copy()
+        driving[list(sr.FACE_POINTS), 0] *= -1
+        rotation, source = sr._face_rotation(reference, driving)
+        self.assertEqual(source, "kabsch_face5")
+        np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=1e-12)
+        self.assertAlmostEqual(np.linalg.det(rotation), 1.0)
+
+    def test_degenerate_face_keeps_reference_offsets_and_reports_fallback(self):
+        reference = skeleton()
+        face = list(sr.FACE_POINTS)
+        for shape in (np.zeros((5, 3)), np.arange(5)[:, None] * np.array([[0.1, 0., 0.]])):
+            driving = skeleton()
+            driving[face] = shape + (0., -0.8, 0.)
+            output, details = sr.retarget_mhr70(reference, driving)
+            self.assertEqual(details["face_rotation_source"], "identity_fallback_degenerate_face")
+            np.testing.assert_allclose(output[face] - output[sr.NOSE],
+                                       reference[face] - reference[sr.NOSE], atol=1e-12)
+        node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+        _, _, report, _ = node.run(sam_output(reference), sam_output(driving),
+                                   np.zeros((1, 512, 384, 3)), "off",
+                                   1., 1., 1., 1., 1., "off", 16)
+        self.assertIn("WARNING: face rotation unavailable", report)
+
     def test_shoulder_center_to_nose_length_is_exact_for_tilted_head(self):
         reference = skeleton()
         driving = skeleton()

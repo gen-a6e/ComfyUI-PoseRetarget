@@ -32,6 +32,7 @@ LEFT_ANKLE, RIGHT_ANKLE = 13, 14
 LEFT_HEEL, RIGHT_HEEL = 17, 20
 RIGHT_WRIST, LEFT_WRIST = 41, 62
 NECK = 69
+FACE_POINTS = (NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR)
 
 
 # MHR70には単独の腰中心がないため、左右の股関節の中点を仮想rootとして使う。
@@ -368,6 +369,30 @@ def _place_edge(output, driving, reference, child, parent, target_length):
     output[child] = output[parent] + direction * target_length
 
 
+def _face_rotation(reference, driving):
+    """顔5点の対応から、reference→drivingの共通回転をKabsch法で求める。
+
+    重心移動・全体サイズを除去して向きだけを推定する。戻り値は行ベクトル用。
+    顔立ちの差は回転推定に影響し得るが、出力の顔形状を変形することはない。
+    """
+    clouds = []
+    for points in (reference, driving):
+        face = points[list(FACE_POINTS)]
+        centered = face - face.mean(axis=0)
+        size = float(np.linalg.norm(centered))
+        if not np.isfinite(size) or size <= EPS:
+            return np.eye(3), "identity_fallback_degenerate_face"
+        clouds.append(centered / size)
+    u, singular, vt = np.linalg.svd(clouds[0].T @ clouds[1])
+    # 平面上の顔でも回転は求まるが、点・直線に潰れると回転軸が定まらない。
+    if singular[1] <= singular[0] * 1e-6:
+        return np.eye(3), "identity_fallback_degenerate_face"
+    correction = np.eye(3)
+    # 左右反転を許可しない。常にdet=+1の回転として顔形状を保持する。
+    correction[2, 2] = 1.0 if np.linalg.det(u @ vt) >= 0 else -1.0
+    return u @ correction @ vt, "kabsch_face5"
+
+
 def retarget_mhr70(reference, driving, reference_symmetry="average",
                    uniform_scale=1.0,
                    leg_scale=1.0, arm_scale=1.0, head_scale=1.0,
@@ -493,14 +518,14 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     )
     output[NOSE] = shoulder_center(output) + nose_direction * neck_length
 
-    # 目と耳: 鼻から外側へ、drivingの顔向きとreferenceの骨長で配置する。
-    for child, parent in (
-            (LEFT_EYE, NOSE), (RIGHT_EYE, NOSE),
-            (LEFT_EAR, LEFT_EYE), (RIGHT_EAR, RIGHT_EYE)):
-        _place_edge(
-            output, driving, reference, child, parent,
-            bone_lengths[child] * uniform * float(head_scale),
-        )
+    # 顔: referenceの鼻→各点を、全点共通の回転・倍率で生成鼻へ移す。
+    # 個別のボーン方向や左右平均は使わず、目幅・耳幅・左右差も維持する。
+    # neck_scaleは上の鼻配置だけに効き、顔内部の大きさには影響しない。
+    face_rotation, face_rotation_source = _face_rotation(reference, driving)
+    face_indices = list(FACE_POINTS[1:])
+    output[face_indices] = output[NOSE] + (
+        (reference[face_indices] - reference[NOSE]) @ face_rotation
+    ) * uniform * float(head_scale)
 
     # 手: 手首を起点に各指を根元から指先へ順番に配置する。
     for child, parent, _ in HAND_EDGES:
@@ -514,6 +539,7 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     details = {
         "base_scale": uniform,
         "size_source": "reference",
+        "face_rotation_source": face_rotation_source,
         "shoulder_pose_scale": shoulder_pose_scale,
         "reference_measurements": reference_measurements,
         "generated_measurements": body_measurements(output),

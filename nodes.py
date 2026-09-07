@@ -129,6 +129,11 @@ class SAM3DBodyPoseRetarget:
             thigh_scale=thigh_scale,
             shin_scale=shin_scale,
         )
+        if details["face_rotation_source"] != "kabsch_face5":
+            warnings.append(
+                "face rotation unavailable: degenerate face landmarks; "
+                "retaining reference face orientation"
+            )
 
         # 3. driving画像と同じカメラ・焦点距離・canvasサイズで2Dへ投影する。
         # fit_to_canvasは合成後の骨格だけに適用し、必要なら全身が収まるよう移動・縮小する。
@@ -197,6 +202,7 @@ class SAM3DBodyPoseRetarget:
             f"reference_height={reference_height_note}; "
             f"driving_height={driving_height_note}; "
             f"size_source={details['size_source']}; "
+            f"face_rotation={details['face_rotation_source']}; "
             f"scale={details['base_scale']:.3f}; "
             f"fit_scale={fit_scale:.3f}; "
             f"camera_depth={depth_note}."
