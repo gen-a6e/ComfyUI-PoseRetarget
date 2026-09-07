@@ -45,12 +45,12 @@ git clone git@github.com:gen-a6e/ComfyUI-PoseRetarget.git
 | `uniform_scale` | 1.0 | 全身サイズ。再構成後に鼻X/Z・最下点Yで位置合わせ |
 | `leg_scale` | 1.0 | 脚と足の追加倍率 |
 | `arm_scale` | 1.0 | 腕と手の追加倍率 |
-| `head_scale` | 1.0 | 首から上の追加倍率 |
+| `head_scale` | 1.0 | R113→R126と、R113基準の顔5点の追加倍率 |
 | `hand_scale` | 1.0 | 手指の追加倍率 |
-| `torso_scale` | 1.0 | 腰中央から首までの胴長の追加倍率 |
+| `torso_scale` | 1.0 | R1→R34→R35→R36→R37の背骨4区間の追加倍率 |
 | `shoulder_width_scale` | 1.0 | 肩リグ4区間の追加倍率。肩幅と肩周囲の前後・上下オフセットにも作用 |
 | `hip_width_scale` | 1.0 | 腰幅の追加倍率 |
-| `neck_scale` | 1.0 | 肩中央から鼻までの長さの追加倍率 |
+| `neck_scale` | 1.0 | R37→R110→R113の2区間と、R110→首69の補助オフセットの追加倍率 |
 | `upper_arm_scale` | 1.0 | 上腕の追加倍率（`arm_scale`との積） |
 | `forearm_scale` | 1.0 | 前腕の追加倍率（`arm_scale`との積） |
 | `thigh_scale` | 1.0 | 太腿の追加倍率（`leg_scale`との積） |
@@ -84,33 +84,65 @@ MHR70を変形・fitなしで直接投影した`driving_pose_keypoint`、処理�
 raw側だけが正しい場合は再投影処理、両方が同じ場合はSAMのMHR70手座標より前段を
 調査できます。
 
-referenceの各骨長は正規化せず、SAM 3D Bodyが推定した3D距離を直接転送します。
-基本式は`出力骨長 = reference骨長 × uniform_scale × 部位別scale`です。各scaleが1.0ならreferenceの3D骨長を維持し、drivingからは3D方向・ポーズを使用します。
-腰幅、肩中央から鼻までの長さは最終骨格上で直接保証されます。肩幅は左右肩間の距離を固定せず、下記の肩リグを組み立てた結果として決まります。
-顔の目・耳は個別の骨長転送ではなく、referenceの鼻からの相対位置をひとまとまりで回転・拡縮します。鼻・両目・両耳の5点にKabsch法を適用してreferenceからdrivingへの回転を推定し、`uniform_scale × head_scale`を適用して生成鼻へ配置します。referenceの目幅・耳幅・左右差を維持し、`reference_symmetry=average`でも顔は平均化しません。鼻の配置式は従来どおりで、`neck_scale`は顔内部のサイズを変えません。
-回転は顔点の対応からの推定で、内部リグの頭回転を直接使用する方式ではありません。顔が直線・一点に潰れて向きを決められない場合はreferenceの顔向きを維持し、`report`に警告と`face_rotation=identity_fallback_degenerate_face`を表示します。通常は`face_rotation=kabsch_face5`です。driving再投影・raw出力・デバッグの元座標は変更しません。
-肩は内部リグMHR127を使い、以下の4区間の**長さをreference、3D方向をdriving**から取ります。
+referenceの各区間長は正規化せず、SAM 3D Bodyが推定した3D距離を直接転送します。
+基本式は`出力区間長 = reference区間長 × uniform_scale × 部位別scale`です。
+
+### 背骨・首・頭の中心リグ
 
 ```text
-R37 c_spine3
-├─ R38 r_clavicle → R39 r_uparm（MHR70右肩6）
-└─ R74 l_clavicle → R75 l_uparm（MHR70左肩5）
+R1 root → R34 → R35 → R36 → R37（背骨）
+                              ├─ R38 → R39（右肩6）
+                              ├─ R74 → R75（左肩5）
+                              └─ R110（首）→ R113（頭）→ R126（頭頂）
 ```
 
-R37は生成した首MHR69を基準に配置します。首69→R37の方向はdriving、長さはreferenceに`uniform_scale × torso_scale`を掛けた値です。肩の4区間には`uniform_scale × shoulder_width_scale`を適用します。幅だけを横方向に動かす方式ではないため、肩の前後・上下位置にも影響します。`reference_symmetry=average`なら左右の対応区間をそれぞれ平均し、`off`なら左右別の長さを保持します。
+中心の7区間は**長さをreference、3D方向をdriving**から取得します。腰中央H→首69の直線距離を固定する方式ではなく、途中の曲がりも区間ごとに反映します。したがって、H→69の直線距離はreferenceと同じになる保証はありません。各接続はリグ上の区間であり、解剖学的な一本の骨と同一ではありません。
 
-肩を前に出す・開くといった方向の変化に応じて、最終的な左右肩間距離も変わります。端から端の肩幅がreferenceと同じであることは保証しません。R37から鎖骨起点への区間はリグ上の接続であり、解剖学的な一本の骨の長さとは限りません。
+| 対象 | 適用倍率 |
+|---|---|
+| R1→R34→R35→R36→R37 | `uniform_scale × torso_scale` |
+| R37→R110→R113 | `uniform_scale × neck_scale` |
+| R113→R126 | `uniform_scale × head_scale` |
+| R113から鼻・目・耳への相対位置 | `uniform_scale × head_scale` |
+| 肩の4区間 | `uniform_scale × shoulder_width_scale` |
+| 腰中央H→R1の補助オフセット | `uniform_scale` |
+| R110→MHR69の補助オフセット | `uniform_scale × neck_scale` |
 
-`report`には通常`shoulder_mode=rig_chain`と、左右平均後のreference区間長→生成区間長、首69→R37の長さを表示します。内部リグは既存の`mesh_data["joint_coords"]`または`raw_output["pred_joint_coords"]`から取得し、入力・widget・出力順の変更はありません。
+Hは左右股関節9・10の中点、R1は内部ルートで別の位置です。Hを仮の起点とし、H→R1もreferenceの距離・drivingの方向で配置します。首69もR110と同一視せず、R110→69のオフセットを同じ方法で転送します。補助オフセットは正式なリグ骨ではなく、異なる点定義をつなぐための区間です。
 
-リグが欠ける・対象区間が潰れる・肩点R39/R75がMHR70肩点と一致しない場合は、**警告付きで従来の肩幅固定方式**へ戻します（`shoulder_mode=legacy_width_fallback`）。この場合のみ、肩中央の首に対するオフセットをreference胴体長÷driving胴体長で換算します。未使用のR126などの異常は肩リグ転送を止めません。旧データでも生成できますが、実機検証では`rig_chain`になっていることを確認してください。
+### 顔はR113を基準に一体で配置
+
+鼻0・左右目1/2・左右耳3/4の5点へ、共通の回転・倍率を適用します。
+
+```text
+生成顔点 = 生成R113 + 回転(reference顔点 − reference R113) × uniform_scale × head_scale
+```
+
+回転は顔5点からKabsch法で推定します。referenceの目幅・耳幅・鼻との位置関係・左右差と、R113から各顔点までの距離を保持します。顔は`reference_symmetry=average`でも平均化しません。目を先に作って鼻を個別に接続する処理や、内部リグの目をMHR70の目へ置き換える処理は行いません。
+
+通常は`face_anchor=R113`。肩中央→鼻の距離は固定せず、顔の局所配置は肩幅に依存しません。ただし最後の全体整列で、最下点の変化に応じて顔を含む全身の位置が変わることはあります。`neck_scale`は首の区間を変えますが、顔内部のサイズには作用しません。
+
+回転は内部リグの回転行列ではなく、顔点の対応からの推定です。顔が直線・一点に潰れて向きを決められない場合はreferenceの方向を維持し、`face_rotation=identity_fallback_degenerate_face`と警告を表示します。通常は`face_rotation=kabsch_face5`です。R113→R126の方向は中心リグ転送によるもので、顔のKabsch回転とは別に取得します。
+
+OpenPose BODY18には背骨途中・内部頭点・頭頂のスロットがありません。中心リグは肩や顔の配置計算と区間長のreportに使い、R126そのものを画像へ描く出力は追加していません。既存のSkeleton Debugは引き続き入力SAM専用です。
+
+### 肩・四肢と互換動作
+
+肩は生成したR37から、R37→R38→R39 / R37→R74→R75の4区間を再構成します。首69からR37を逆算しません。`reference_symmetry=average`なら左右の対応区間をそれぞれ平均し、`off`なら左右別の長さを保持します。肩の倍率は前後・上下オフセットにも作用し、左右肩間の距離は区間を組み立てた結果で決まります。
+
+腰幅・四肢・手指・足先の転送方法は変更していません。腕は新しい肩位置から生成します。通常の`report`には`center_mode=rig_chain`、`face_anchor=R113`、`shoulder_mode=rig_chain`、中心7区間と肩4区間のreference→生成長を表示します。
+
+内部リグは既存の`mesh_data["joint_coords"]`または`raw_output["pred_joint_coords"]`から取得します。リグの欠損・不正値・中心区間の退化などで中心構造を使えない場合は、警告と`center_mode=legacy_torso_fallback`を出し、直前版のH→69／肩中央→鼻の配置へ戻します。肩のリグだけ使用可能なら4区間転送は維持し、肩も使用不能なら`shoulder_mode=legacy_width_fallback`として肩幅固定方式へ戻します。たとえばR126が欠ける場合、身長はunavailable、中心は旧方式、肩は4区間方式になり得ます。
+
+旧方式へ戻った場合の倍率も直前版どおりです。`torso_scale`はH→69、`head_scale × neck_scale`は肩中央→鼻へ作用します。新方式の比較では必ず`center_mode=rig_chain`を確認してください。入力・widget順・出力順は変更していないため、今回の更新によるノード再追加は不要です。ただし**各倍率の意味が変わるので、以前の補正値は一旦1.0を基準に再確認してください**。
+
 配置は、3D骨格を組み立てた後に全点を同量だけ平行移動し、**鼻のX・Zと、最下点のYをdrivingへ合わせます**。SAMの投影用座標はY正方向が下なので、最下点はY最大の点です。身体・顔・手指・足先・かかと・首を対象にし、補助点63〜68は除外します。生成側とdriving側で最下点の関節が異なっても、それぞれの最下点の高さを揃えます。手が最下点なら手が基準であり、接地を保証するIKではありません。骨長・各点の相対位置は変えず、腰中央は固定しません。`report`には移動量と両方の最下点インデックスを表示します。
 これは3D座標での整列なので、鼻のYや画像上の足元まで一致するとは限りません。`fit_to_canvas=off`ならこの投影配置を維持し、fitを有効にすると2Dでさらに移動・拡縮されます。driving比較用2出力やデバッグの元骨格にはこの整列を適用しません。
-OpenPoseの首スロット（BODY18の1番）は、DWPoseと同様に**投影後の左右肩の2D中点**を出力します。マージ結果・driving再投影・SAM raw 2Dの3出力に共通です。片肩が無効なら首点のconfidenceも0にします。内部3DのMHR69は変更せず、骨格マージ・身長計測・デバッグでは本来の首点を使います。デバッグのSは3D肩中央を投影した点なので、透視投影ではOpenPoseの2D中点と一致しない場合があります。
+OpenPoseの首スロット（BODY18の1番）は、DWPoseと同様に**投影後の左右肩の2D中点**を出力します。マージ結果・driving再投影・SAM raw 2Dの3出力に共通です。片肩が無効なら首点のconfidenceも0にします。これは出力形式への変換だけで、内部MHR69を肩中点に置き換える処理ではありません。デバッグのSは3D肩中央を投影した点なので、透視投影ではOpenPoseの2D中点と一致しない場合があります。
 canvas fitの範囲計算は、実際に出力するBODY18と左右HAND21の有効点だけを対象にします。描画しないつま先・かかと・補助点・MHR69は縮小率や配置に影響しません。画面外にある手・肘などの出力点は、引き続きfit対象です。
 `report`にはreferenceとdrivingの概算身長、およびreferenceと生成後の主要な実骨長を`reference->generated`形式で表示します。
 
-概算身長は、内部リグの`R126: c_head_null`を頭頂として直接使い、以下の3D直線距離を合計します。
+補足表示の概算身長の算出式は今回変更していません（中心リグ7区間の合計とは別の指標）。内部リグの`R126: c_head_null`を頭頂として直接使い、以下の3D直線距離を合計します。
 
 ```text
 概算身長 = 距離(R126, 69) + 距離(69, H)

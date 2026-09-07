@@ -1,9 +1,9 @@
 """SAM 3D BodyのMHR70を使って、体型とポーズを3Dで合成する計算モジュール。
 
 処理の流れ:
-1. ``SAM3D_OUTPUT``からMHR70座標と、肩に使うMHR127内部リグを取得する。
+1. ``SAM3D_OUTPUT``からMHR70座標と、中心・肩に使うMHR127内部リグを取得する。
 2. referenceの3D骨長を取得し、必要なら左右の推定誤差を平均化する。
-3. drivingのボーン方向・肩の上下・人物位置へreferenceの実骨長を適用する。
+3. 中心・肩・四肢の各区間はdrivingの方向を使い、顔はR113基準で一体回転する。
 4. driving側のカメラで3D座標を2Dピクセル座標へ投影する。
 5. BODY18＋左右HAND21の``POSE_KEYPOINT``形式へ変換する。
 
@@ -37,6 +37,8 @@ NECK = 69
 RIG_SPINE3 = 37
 SHOULDER_RIG_EDGES = ((37, 38), (38, 39), (37, 74), (74, 75))
 SHOULDER_RIG_POINTS = (37, 38, 39, 74, 75)
+CENTER_RIG_CHAIN = (1, 34, 35, 36, 37, 110, 113, 126)
+CENTER_RIG_EDGES = tuple(zip(CENTER_RIG_CHAIN, CENTER_RIG_CHAIN[1:]))
 FACE_POINTS = (NOSE, LEFT_EYE, RIGHT_EYE, LEFT_EAR, RIGHT_EAR)
 # 実身体点＋首。63〜68の補助点は最下点判定に使わない（足先・手指は含める）。
 ALIGNMENT_POINTS = tuple(range(63)) + (NECK,)
@@ -261,23 +263,28 @@ def extract_head_top(output):
     return head.copy(), 126
 
 
-def extract_shoulder_rig(output):
-    """肩の再構成用にMHR127を取り出す。未使用点の欠損はここでは判定しない。"""
+def extract_mhr127(output):
+    """中心・肩の再構成用にMHR127を取り出す。使用点の検証は各処理で行う。"""
     if not isinstance(output, dict):
         raise ValueError("SAM3D input must be a SAM3D_OUTPUT dictionary")
     value = output.get("joint_coords")
     if value is None:
         raw = output.get("raw_output")
         value = raw.get("pred_joint_coords") if isinstance(raw, dict) else None
-    points = as_numpy(value, "MHR127 joint_coords for shoulder rig")
+    points = as_numpy(value, "MHR127 joint_coords")
     while points.ndim > 2 and points.shape[0] == 1:
         points = points[0]
     if points.shape != (127, 3):
-        raise ValueError(f"shoulder rig requires MHR127 (127, 3); received {points.shape}")
+        raise ValueError(f"rig requires MHR127 (127, 3); received {points.shape}")
     return points.copy()
 
 
-def _validate_shoulder_rig(rig, body, side):
+def extract_shoulder_rig(output):
+    """肩リグ追加時の呼び出し名を互換用に維持する。"""
+    return extract_mhr127(output)
+
+
+def _validate_shoulder_rig(rig, body, side, require_neck_anchor=True):
     """別人物・別座標系のリグや潰れた区間を、MHR70へ混ぜないための検証。"""
     points = as_numpy(rig, f"{side} shoulder rig")
     if points.shape != (127, 3):
@@ -292,28 +299,30 @@ def _validate_shoulder_rig(rig, body, side):
         if np.linalg.norm(points[child] - points[parent]) <= EPS:
             raise ValueError(f"{side} shoulder segment R{parent}->R{child} is degenerate")
     # R37は首69を基準に配置するので、その向きも必要。
-    if np.linalg.norm(points[RIG_SPINE3] - body[NECK]) <= EPS:
+    if require_neck_anchor and np.linalg.norm(points[RIG_SPINE3] - body[NECK]) <= EPS:
         raise ValueError(f"{side} shoulder anchor MHR69->R37 is degenerate")
     return points
 
 
 def _place_rig_shoulders(output, reference, driving, reference_rig, driving_rig,
-                         symmetry, uniform, torso_scale, width_scale):
-    """首69→R37を起点に、背骨→鎖骨起点→肩の4区間を再構成する。"""
-    ref = _validate_shoulder_rig(reference_rig, reference, "reference")
-    drv = _validate_shoulder_rig(driving_rig, driving, "driving")
+                         symmetry, uniform, torso_scale, width_scale, spine_origin=None):
+    """生成R37から肩を構成。中心リグがない旧データのみ首69からR37を逆算。"""
+    ref = _validate_shoulder_rig(reference_rig, reference, "reference", spine_origin is None)
+    drv = _validate_shoulder_rig(driving_rig, driving, "driving", spine_origin is None)
     lengths = {edge: float(np.linalg.norm(ref[edge[1]] - ref[edge[0]]))
                for edge in SHOULDER_RIG_EDGES}
     if symmetry == "average":
         for right, left in (((37, 38), (37, 74)), ((38, 39), (74, 75))):
             lengths[right] = lengths[left] = (lengths[right] + lengths[left]) * .5
 
-    # 首69の生成位置は既存の胴体計算を使い、そこからR37までの区間を転送する。
-    # 肩の4区間とは分け、首→上部背骨の距離にはtorso_scaleを適用する。
-    anchor_vector = drv[RIG_SPINE3] - driving[NECK]
-    anchor_length = float(np.linalg.norm(ref[RIG_SPINE3] - reference[NECK]))
-    generated = {RIG_SPINE3: output[NECK] + anchor_vector / np.linalg.norm(anchor_vector)
-                 * anchor_length * uniform * float(torso_scale)}
+    # 中心リグが使用不能なときだけ、旧方式の首69→R37をtorso_scaleで転送する。
+    anchor_length = None
+    if spine_origin is None:
+        anchor_vector = drv[RIG_SPINE3] - driving[NECK]
+        anchor_length = float(np.linalg.norm(ref[RIG_SPINE3] - reference[NECK]))
+        spine_origin = (output[NECK] + anchor_vector / np.linalg.norm(anchor_vector)
+                        * anchor_length * uniform * float(torso_scale))
+    generated = {RIG_SPINE3: spine_origin.copy()}
     for parent, child in SHOULDER_RIG_EDGES:
         direction = drv[child] - drv[parent]
         generated[child] = (generated[parent] + direction / np.linalg.norm(direction)
@@ -321,6 +330,51 @@ def _place_rig_shoulders(output, reference, driving, reference_rig, driving_rig,
     output[RIGHT_SHOULDER] = generated[39]
     output[LEFT_SHOULDER] = generated[75]
     return generated, lengths, anchor_length
+
+
+def _transfer_offset(reference_vector, driving_vector, scale, name):
+    """別定義の点を同一視しないための仮想区間。長さはreference、向きはdriving。"""
+    if not (np.isfinite(reference_vector).all() and np.isfinite(driving_vector).all()):
+        raise ValueError(f"{name} contains non-finite coordinates")
+    length = float(np.linalg.norm(reference_vector))
+    if length <= EPS:
+        return np.zeros(3)
+    driving_length = float(np.linalg.norm(driving_vector))
+    if driving_length <= EPS:
+        raise ValueError(f"{name} driving direction is degenerate")
+    return driving_vector / driving_length * length * scale
+
+
+def _place_center_rig(reference, driving, reference_rig, driving_rig, root,
+                      uniform, torso_scale, neck_scale, head_scale):
+    """骨盤から頭頂まで7区間を転送し、首69の位置も返す。入力は変更しない。"""
+    # 肩点との一致も検証し、別座標系・別人物のリグを胴体へ混ぜない。
+    ref = _validate_shoulder_rig(reference_rig, reference, "reference", False)
+    drv = _validate_shoulder_rig(driving_rig, driving, "driving", False)
+    for side, points in (("reference", ref), ("driving", drv)):
+        if not np.isfinite(points[list(CENTER_RIG_CHAIN)]).all():
+            raise ValueError(f"{side} center rig contains non-finite coordinates")
+        for parent, child in CENTER_RIG_EDGES:
+            if np.linalg.norm(points[child] - points[parent]) <= EPS:
+                raise ValueError(f"{side} center segment R{parent}->R{child} is degenerate")
+
+    # Hは左右股関節の中点、R1は内部ルート。骨盤内のずれには全体倍率だけを適用。
+    generated = {1: root + _transfer_offset(
+        ref[1] - hip_center(reference), drv[1] - hip_center(driving), uniform, "H->R1")}
+    lengths = {}
+    for parent, child in CENTER_RIG_EDGES:
+        length = float(np.linalg.norm(ref[child] - ref[parent]))
+        lengths[(parent, child)] = length
+        part_scale = torso_scale if child in (34, 35, 36, 37) else (
+            neck_scale if child in (110, 113) else head_scale)
+        direction = drv[child] - drv[parent]
+        generated[child] = (generated[parent] + direction / np.linalg.norm(direction)
+                            * length * uniform * float(part_scale))
+    # MHR69はR110そのものではない。既存の首点へのオフセットを別に転送する。
+    neck = generated[110] + _transfer_offset(
+        reference[NECK] - ref[110], driving[NECK] - drv[110],
+        uniform * float(neck_scale), "R110->MHR69")
+    return generated, lengths, neck
 
 
 def hip_center(points):
@@ -524,6 +578,18 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     )
     output[NECK] = root + torso_direction * torso_length
 
+    # 新しい中心構造をすべて検証してから採用する。欠損時は直前版の配置を維持。
+    center_mode, center_warning = "rig_chain", None
+    center_rig_points, center_lengths = {}, {}
+    try:
+        center_rig_points, center_lengths, neck = _place_center_rig(
+            reference, driving, reference_rig, driving_rig, root,
+            uniform, torso_scale, neck_scale, head_scale)
+    except ValueError as exc:
+        center_mode, center_warning = "legacy_torso_fallback", str(exc)
+    else:
+        output[NECK] = neck
+
     # 肩: 端から端の幅を固定せず、背骨→鎖骨起点→肩の4区間を転送する。
     # リグのない旧データは従来方式へ戻し、reportで明示する。
     shoulder_mode = "rig_chain"
@@ -533,7 +599,8 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     try:
         shoulder_rig_points, shoulder_lengths, shoulder_anchor_length = _place_rig_shoulders(
             output, reference, driving, reference_rig, driving_rig,
-            reference_symmetry, uniform, torso_scale, shoulder_width_scale)
+            reference_symmetry, uniform, torso_scale, shoulder_width_scale,
+            spine_origin=center_rig_points.get(RIG_SPINE3))
     except ValueError as exc:
         shoulder_mode = "legacy_width_fallback"
         shoulder_warning = str(exc)
@@ -586,28 +653,27 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
             bone_lengths[child] * uniform * float(leg_scale),
         )
 
-    # 頭: 肩中央→鼻をreferenceの実際の3D距離として保証する。
-    # 首や肩の複数ボーンを順に足す方式にしないことで、推定誤差の累積を避ける。
-    driving_shoulders = shoulder_center(driving)
-    reference_shoulders = shoulder_center(reference)
-    nose_direction = _unit_direction(
-        driving[NOSE] - driving_shoulders,
-        reference[NOSE] - reference_shoulders,
-    )
-    neck_length = (
-        reference_measurements["shoulder_to_nose"] * uniform
-        * float(head_scale) * float(neck_scale)
-    )
-    output[NOSE] = shoulder_center(output) + nose_direction * neck_length
-
-    # 顔: referenceの鼻→各点を、全点共通の回転・倍率で生成鼻へ移す。
-    # 個別のボーン方向や左右平均は使わず、目幅・耳幅・左右差も維持する。
-    # neck_scaleは上の鼻配置だけに効き、顔内部の大きさには影響しない。
+    # 顔5点は一体で回転させる。頭の軸1本だけでは顔の左右向きは決まらない。
     face_rotation, face_rotation_source = _face_rotation(reference, driving)
-    face_indices = list(FACE_POINTS[1:])
-    output[face_indices] = output[NOSE] + (
-        (reference[face_indices] - reference[NOSE]) @ face_rotation
-    ) * uniform * float(head_scale)
+    if center_mode == "rig_chain":
+        face_anchor = "R113"
+        face_indices = list(FACE_POINTS)
+        output[face_indices] = center_rig_points[113] + (
+            (reference[face_indices] - as_numpy(reference_rig, "reference rig")[113]) @ face_rotation
+        ) * uniform * float(head_scale)
+    else:
+        # リグが不完全な場合だけ直前版の肩中央→鼻配置へ戻す。
+        face_anchor = "shoulder_center_fallback"
+        nose_direction = _unit_direction(
+            driving[NOSE] - shoulder_center(driving),
+            reference[NOSE] - shoulder_center(reference))
+        neck_length = (reference_measurements["shoulder_to_nose"] * uniform
+                       * float(head_scale) * float(neck_scale))
+        output[NOSE] = shoulder_center(output) + nose_direction * neck_length
+        face_indices = list(FACE_POINTS[1:])
+        output[face_indices] = output[NOSE] + (
+            (reference[face_indices] - reference[NOSE]) @ face_rotation
+        ) * uniform * float(head_scale)
 
     # 手: 手首を起点に各指を根元から指先へ順番に配置する。
     for child, parent, _ in HAND_EDGES:
@@ -622,12 +688,19 @@ def retarget_mhr70(reference, driving, reference_symmetry="average",
     # 診断用の内部点も、返すMHR70と同じ最終座標系へ移す。
     shoulder_rig_points = {index: point + translation
                            for index, point in shoulder_rig_points.items()}
+    center_rig_points = {index: point + translation
+                        for index, point in center_rig_points.items()}
 
     # 呼び出し側でreferenceと生成後の実骨長を比較できるようにする。
     details = {
         "base_scale": uniform,
         "size_source": "reference",
         "face_rotation_source": face_rotation_source,
+        "face_anchor": face_anchor,
+        "center_mode": center_mode,
+        "center_warning": center_warning,
+        "center_rig_points": center_rig_points,
+        "center_reference_lengths": center_lengths,
         "alignment_translation": translation,
         "generated_bottom_index": generated_bottom,
         "driving_bottom_index": driving_bottom,

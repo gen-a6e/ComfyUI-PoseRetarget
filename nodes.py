@@ -4,7 +4,7 @@ from .sam3d_retarget import (
     extract_head_top,
     extract_mhr70,
     extract_mhr70_2d,
-    extract_shoulder_rig,
+    extract_mhr127,
     estimated_height,
     fit_projected,
     image_size,
@@ -28,12 +28,12 @@ def _height_report(sam3d, points, side, warnings):
     return f"{height:.3f} m", f"R{index}"
 
 
-def _optional_shoulder_rig(sam3d, side, warnings):
+def _optional_rig(sam3d, side, warnings):
     """旧SAM出力でも生成を止めず、リグを使えない理由は明示する。"""
     try:
-        return extract_shoulder_rig(sam3d)
+        return extract_mhr127(sam3d)
     except ValueError as exc:
-        warnings.append(f"{side}_shoulder_rig unavailable: {exc}")
+        warnings.append(f"{side}_rig unavailable: {exc}")
         return None
 
 
@@ -118,8 +118,8 @@ class SAM3DBodyPoseRetarget:
         driving_height_note, driving_head_top_index = _height_report(
             driving_sam3d, driving, "driving", warnings
         )
-        reference_rig = _optional_shoulder_rig(reference_sam3d, "reference", warnings)
-        driving_rig = _optional_shoulder_rig(driving_sam3d, "driving", warnings)
+        reference_rig = _optional_rig(reference_sam3d, "reference", warnings)
+        driving_rig = _optional_rig(driving_sam3d, "driving", warnings)
 
         # 2. referenceの各骨長とdrivingの各ボーン方向を合成する。
         # ここではまだ3D座標のままで、カメラ投影やcanvas調整は行わない。
@@ -143,6 +143,10 @@ class SAM3DBodyPoseRetarget:
             reference_rig=reference_rig,
             driving_rig=driving_rig,
         )
+        if details["center_warning"]:
+            warnings.append(
+                f"center rig unavailable; using legacy torso/face: {details['center_warning']}"
+            )
         if details["shoulder_warning"]:
             warnings.append(
                 f"shoulder rig unavailable; using legacy width: {details['shoulder_warning']}"
@@ -221,6 +225,8 @@ class SAM3DBodyPoseRetarget:
             f"driving_height={driving_height_note}; "
             f"size_source={details['size_source']}; "
             f"face_rotation={details['face_rotation_source']}; "
+            f"center_mode={details['center_mode']}; "
+            f"face_anchor={details['face_anchor']}; "
             f"shoulder_mode={details['shoulder_mode']}; "
             f"scale={details['base_scale']:.3f}; "
             f"fit_scale={fit_scale:.3f}; "
@@ -234,6 +240,14 @@ class SAM3DBodyPoseRetarget:
             f"lowest_indices generated={details['generated_bottom_index']}, "
             f"driving={details['driving_bottom_index']}."
         )
+        if details["center_mode"] == "rig_chain":
+            center_points = details["center_rig_points"]
+            center_note = ", ".join(
+                f"R{parent}->R{child}:{length:.4f}"
+                f"->{float(((center_points[child] - center_points[parent]) ** 2).sum() ** .5):.4f}"
+                for (parent, child), length in details["center_reference_lengths"].items()
+            )
+            report += f" Center rig lengths reference->generated (m): {center_note}."
         if details["shoulder_mode"] == "rig_chain":
             rig_points = details["shoulder_rig_points"]
             # 最終的な肩幅は姿勢で変わる。保証する長さは各リグ区間として別に示す。
@@ -245,9 +259,14 @@ class SAM3DBodyPoseRetarget:
             anchor_length = details["shoulder_anchor_length"]
             report += (
                 f" Shoulder rig lengths effective_reference->generated (m): {segment_note}."
-                f" Shoulder anchor MHR69->R37 (m): {anchor_length:.4f}"
-                f"->{anchor_length * uniform_scale * torso_scale:.4f}."
             )
+            if anchor_length is None:
+                report += " Shoulder origin=generated_R37."
+            else:
+                report += (
+                    f" Shoulder anchor MHR69->R37 (m): {anchor_length:.4f}"
+                    f"->{anchor_length * uniform_scale * torso_scale:.4f}."
+                )
         for side, difference in (
             ("right", right_hand_difference),
             ("left", left_hand_difference),
