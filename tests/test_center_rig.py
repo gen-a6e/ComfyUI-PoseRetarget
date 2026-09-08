@@ -158,11 +158,9 @@ class CenterRigTests(unittest.TestCase):
         fallback=node_result(ref,drv,bad,dr)
         for text in ('center_mode=rig_chain','face_anchor=R113','R1->R34:',
                      'R113->R126:','Shoulder origin=generated_R37.'):
-            self.assertIn(text,current[2])
-        self.assertIn('center_mode=legacy_torso_fallback',fallback[2])
-        self.assertIn('WARNING: center rig unavailable',fallback[2])
-        self.assertEqual(current[1],fallback[1])
-        self.assertEqual(current[3],fallback[3])
+            self.assertIn(text,current[1])
+        self.assertIn('center_mode=legacy_torso_fallback',fallback[1])
+        self.assertIn('WARNING: center rig unavailable',fallback[1])
         self.assertNotEqual(current[0],fallback[0])
 
 if __name__=='__main__':

@@ -190,16 +190,15 @@ class FullRigTests(unittest.TestCase):
         self.assertIn((41,42),rl.LIMB_EDGES) # wrist
         self.assertIn((7,8),rl.LIMB_EDGES) # foot chain
 
-    def test_node_reports_approximation_without_changing_driving_outputs(self):
+    def test_node_reports_approximation_and_fallback(self):
         ref,rr=fixture();drv,dr=fixture()
         result=node_result(ref,drv,rr,dr)
         bad=rr.copy();bad[41]=np.nan
         old=node_result(ref,drv,bad,dr)
-        self.assertIn('skeleton_mode=full_rig',result[2])
-        self.assertIn('not regenerated from a deformed mesh',result[2])
-        self.assertIn('R40->R41:',result[2])
-        self.assertIn('legacy_mixed_fallback',old[2])
-        self.assertEqual(result[1],old[1]); self.assertEqual(result[3],old[3])
+        self.assertIn('skeleton_mode=full_rig',result[1])
+        self.assertIn('not regenerated from a deformed mesh',result[1])
+        self.assertIn('R40->R41:',result[1])
+        self.assertIn('legacy_mixed_fallback',old[1])
 
 
 if __name__=='__main__': unittest.main()

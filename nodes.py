@@ -87,15 +87,8 @@ class SAM3DBodyPoseRetarget:
             }
         }
 
-    RETURN_TYPES = (
-        "POSE_KEYPOINT", "POSE_KEYPOINT", "STRING", "POSE_KEYPOINT"
-    )
-    RETURN_NAMES = (
-        "pose_keypoint",
-        "driving_pose_keypoint",
-        "report",
-        "sam_raw_driving_pose_keypoint",
-    )
+    RETURN_TYPES = ("POSE_KEYPOINT", "STRING")
+    RETURN_NAMES = ("pose_keypoint", "report")
     FUNCTION = "run"
     CATEGORY = "pose-retarget"
 
@@ -175,14 +168,12 @@ class SAM3DBodyPoseRetarget:
         # scale・retarget・fitを一切適用しないため、SAM 3D Bodyの元結果を確認できる。
         driving_projected, driving_valid, _ = project_mhr70(
             driving, camera, focal_xy, width, height)
-        driving_output = to_pose_keypoint(
+        # 公開ソケットには出さないが、診断処理と回帰検証のため変換まで維持する。
+        to_pose_keypoint(
             driving_projected, driving_valid, width, height)
 
-        # SAM内部で計算済みの2D点も再投影せず出力する。3D再投影との差を診断する用途。
+        # SAM内部で計算済みの2D点も、再投影せず内部診断用POSE_KEYPOINTへ変換する。
         # 診断不能時もcanvas情報は保持するが、人物・座標は捏造しない。
-        raw_driving_output = [{
-            "canvas_width": width, "canvas_height": height, "people": []
-        }]
         right_hand_difference = left_hand_difference = {"count": 0}
         try:
             raw_driving_projected, raw_driving_valid = extract_mhr70_2d(
@@ -191,10 +182,10 @@ class SAM3DBodyPoseRetarget:
             if not raw_driving_valid.any():
                 raise ValueError("SAM raw 2D keypoints contain no finite points")
         except ValueError as exc:
-            warnings.append(f"sam_raw_driving_pose_keypoint unavailable: {exc}")
+            warnings.append(f"sam_raw_driving_2d unavailable: {exc}")
         else:
             raw_driving_valid &= driving_valid
-            raw_driving_output = to_pose_keypoint(
+            to_pose_keypoint(
                 raw_driving_projected, raw_driving_valid, width, height
             )
             right_hand_difference = projected_difference(
@@ -318,8 +309,8 @@ class SAM3DBodyPoseRetarget:
             "face_keypoints_2d is zero-confidence."
         )
 
-        # 既存3出力の順序を維持し、SAM内部2Dの診断出力を末尾へ追加する。
-        return (output, driving_output, report, raw_driving_output)
+        # 比較用2出力はノード上から隠し、計算結果と診断要約だけを公開する。
+        return (output, report)
 
 
 NODE_CLASS_MAPPINGS = {

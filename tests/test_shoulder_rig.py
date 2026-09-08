@@ -118,7 +118,7 @@ class ShoulderRigTests(unittest.TestCase):
         out,details=sr.retarget_mhr70(ref,drv,reference_rig=rr,driving_rig=dr)
         self.assertEqual(details['shoulder_mode'],'rig_chain')
         self.assertTrue(np.isfinite(out).all())
-        _,_,report,_=run_node(ref,drv,rr,dr)
+        _,report=run_node(ref,drv,rr,dr)
         self.assertIn('reference_height=unavailable',report)
         self.assertIn('shoulder_mode=rig_chain',report)
 
@@ -130,18 +130,16 @@ class ShoulderRigTests(unittest.TestCase):
         got[38]=999
         self.assertFalse(np.all(rr[38]==999))
 
-    def test_node_uses_rig_and_keeps_driving_and_raw_diagnostic_outputs(self):
+    def test_node_uses_rig_and_keeps_internal_diagnostics(self):
         ref,rr=fixture();drv,dr=fixture(protracted=True)
         result=run_node(ref,drv,rr,dr)
         legacy=run_node(ref,drv,None,None)
-        self.assertIn('shoulder_mode=rig_chain',result[2])
-        self.assertIn('R37->R38:',result[2])
-        self.assertIn('R74->R75:',result[2])
-        self.assertIn('shoulder_mode=legacy_width_fallback',legacy[2])
-        self.assertIn('WARNING: shoulder rig unavailable',legacy[2])
+        self.assertIn('shoulder_mode=rig_chain',result[1])
+        self.assertIn('R37->R38:',result[1])
+        self.assertIn('R74->R75:',result[1])
+        self.assertIn('shoulder_mode=legacy_width_fallback',legacy[1])
+        self.assertIn('WARNING: shoulder rig unavailable',legacy[1])
         self.assertNotEqual(result[0],legacy[0])
-        self.assertEqual(result[1],legacy[1])
-        self.assertEqual(result[3],legacy[3])
 
 
 if __name__=='__main__':

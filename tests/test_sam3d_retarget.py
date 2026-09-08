@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -351,9 +352,9 @@ class SAM3DRetargetTests(unittest.TestCase):
             np.testing.assert_allclose(output[face] - output[sr.NOSE],
                                        reference[face] - reference[sr.NOSE], atol=1e-12)
         node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
-        _, _, report, _ = node.run(sam_output(reference), sam_output(driving),
-                                   np.zeros((1, 512, 384, 3)), "off",
-                                   1., 1., 1., 1., 1., "off", 16)
+        _, report = node.run(sam_output(reference), sam_output(driving),
+                             np.zeros((1, 512, 384, 3)), "off",
+                             1., 1., 1., 1., 1., "off", 16)
         self.assertIn("WARNING: face rotation unavailable", report)
 
     def test_shoulder_center_to_nose_length_is_exact_for_tilted_head(self):
@@ -557,8 +558,18 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertEqual(scale, 1.0)
         np.testing.assert_array_equal(fitted, points)
 
-    def test_all_three_node_pose_outputs_use_their_own_2d_shoulder_midpoint(self):
-        node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+    def test_internal_diagnostic_poses_use_their_own_2d_shoulder_midpoint(self):
+        package = load_package()
+        node = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+        nodes_module = sys.modules[node.__class__.__module__]
+        original_to_pose_keypoint = nodes_module.to_pose_keypoint
+        captured = []
+
+        def capture(*args, **kwargs):
+            result = original_to_pose_keypoint(*args, **kwargs)
+            captured.append(result)
+            return result
+
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
         driving = skeleton()
         driving[sr.LEFT_SHOULDER] += (0.0, 0.12, 0.5)
@@ -566,15 +577,18 @@ class SAM3DRetargetTests(unittest.TestCase):
         raw = source["raw_output"]["pred_keypoints_2d"]
         raw[sr.LEFT_SHOULDER] = (100, 80)
         raw[sr.RIGHT_SHOULDER] = (200, 120)
-        merged, projected, _, diagnostic = node.run(
-            sam_output(), source, image, "off",
-            1.3, 1.0, 1.0, 1.0, 1.0, "fit_exactly", 16)
-        for output in (merged, projected, diagnostic):
+        with patch.object(nodes_module, "to_pose_keypoint", side_effect=capture):
+            merged, _ = node.run(
+                sam_output(), source, image, "off",
+                1.3, 1.0, 1.0, 1.0, 1.0, "fit_exactly", 16)
+        self.assertEqual(len(captured), 3)
+        for output in captured:
             body = np.asarray(output[0]["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
             np.testing.assert_allclose(body[1, :2], (body[2, :2] + body[5, :2]) * 0.5,
                                        atol=1e-6)
             self.assertEqual(body[1, 2], 1.0)
-        raw_body = np.asarray(diagnostic[0]["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
+        self.assertEqual(merged, captured[0])
+        raw_body = np.asarray(captured[2][0]["people"][0]["pose_keypoints_2d"]).reshape(18, 3)
         np.testing.assert_array_equal(raw_body[1], (150, 100, 1))
 
     def test_node_accepts_sam3d_output_and_returns_pose_keypoint(self):
@@ -582,7 +596,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         node = node_class()
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
 
-        output, driving_output, report, raw_driving_output = node.run(
+        output, report = node.run(
             sam_output(), sam_output(), image,
             "average",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -593,10 +607,6 @@ class SAM3DRetargetTests(unittest.TestCase):
         person = output[0]["people"][0]
         self.assertEqual(len(person["pose_keypoints_2d"]), 18 * 3)
         self.assertEqual(len(person["hand_left_keypoints_2d"]), 21 * 3)
-        self.assertEqual(driving_output[0]["canvas_width"], 384)
-        self.assertEqual(driving_output[0]["canvas_height"], 512)
-        self.assertEqual(raw_driving_output[0]["canvas_width"], 384)
-        self.assertEqual(raw_driving_output[0]["canvas_height"], 512)
         self.assertIn("SAM 3D Body retargeted", report)
         self.assertIn("size_source=reference", report)
         self.assertIn("reference_height=", report)
@@ -613,7 +623,7 @@ class SAM3DRetargetTests(unittest.TestCase):
         del reference["keypoints_3d_full"]
         del driving["keypoints_3d_full"]
 
-        _, _, report, _ = node.run(
+        _, report = node.run(
             reference, driving, image,
             "off",
             1.0, 1.0, 1.0, 1.0, 1.0,
@@ -623,19 +633,30 @@ class SAM3DRetargetTests(unittest.TestCase):
         self.assertIn("driving_height=", report)
         self.assertIn("reference=R126, driving=R126", report)
 
-    def test_driving_output_is_direct_projection_without_fit_or_retarget(self):
-        node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
+    def test_internal_driving_pose_is_direct_projection_without_fit_or_retarget(self):
+        package = load_package()
+        node_class = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         node = node_class()
+        nodes_module = sys.modules[node.__class__.__module__]
+        original_to_pose_keypoint = nodes_module.to_pose_keypoint
+        captured = []
+
+        def capture(*args, **kwargs):
+            result = original_to_pose_keypoint(*args, **kwargs)
+            captured.append(result)
+            return result
+
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
         driving_points = skeleton()
         driving_points[sr.NOSE] = (0.45, -0.70, 0.25)
         driving_sam3d = sam_output(driving_points)
 
-        _, driving_output, _, _ = node.run(
-            sam_output(), driving_sam3d, image,
-            "off",
-            1.4, 0.8, 1.3, 0.7, 1.2,
-            "fit_exactly", 80)
+        with patch.object(nodes_module, "to_pose_keypoint", side_effect=capture):
+            node.run(
+                sam_output(), driving_sam3d, image,
+                "off",
+                1.4, 0.8, 1.3, 0.7, 1.2,
+                "fit_exactly", 80)
 
         expected, valid, _ = sr.project_mhr70(
             driving_points,
@@ -644,14 +665,12 @@ class SAM3DRetargetTests(unittest.TestCase):
             384,
             512,
         )
-        person = driving_output[0]["people"][0]
+        person = captured[1][0]["people"][0]
         body = np.asarray(person["pose_keypoints_2d"]).reshape(18, 3)
         np.testing.assert_allclose(body[0, :2], expected[sr.NOSE])
         self.assertEqual(body[0, 2], float(valid[sr.NOSE]))
 
     def test_raw_driving_output_uses_sam_internal_2d_and_reports_hand_delta(self):
-        node_class = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
-        node = node_class()
         image = np.zeros((1, 512, 384, 3), dtype=np.float32)
         driving_points = skeleton()
         reprojected, _, _ = sr.project_mhr70(
@@ -665,15 +684,27 @@ class SAM3DRetargetTests(unittest.TestCase):
         raw_2d[list(sr.RIGHT_HAND_FROM_MHR70)] += np.array([3.0, 4.0])
         driving_sam3d = sam_output(driving_points, raw_2d)
 
-        _, _, report, raw_output = node.run(
-            sam_output(), driving_sam3d, image,
-            "off",
-            1.0, 1.0, 1.0, 1.0, 1.0,
-            "off", 16,
-        )
+        package = load_package()
+        node = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
+        nodes_module = sys.modules[node.__class__.__module__]
+        original_to_pose_keypoint = nodes_module.to_pose_keypoint
+        captured = []
+
+        def capture(*args, **kwargs):
+            result = original_to_pose_keypoint(*args, **kwargs)
+            captured.append(result)
+            return result
+
+        with patch.object(nodes_module, "to_pose_keypoint", side_effect=capture):
+            _, report = node.run(
+                sam_output(), driving_sam3d, image,
+                "off",
+                1.0, 1.0, 1.0, 1.0, 1.0,
+                "off", 16,
+            )
 
         hand = np.asarray(
-            raw_output[0]["people"][0]["hand_right_keypoints_2d"]
+            captured[2][0]["people"][0]["hand_right_keypoints_2d"]
         ).reshape(21, 3)
         np.testing.assert_allclose(
             hand[:, :2], raw_2d[list(sr.RIGHT_HAND_FROM_MHR70)]
@@ -708,25 +739,19 @@ class SAM3DRetargetTests(unittest.TestCase):
                         if raw_missing:
                             del driving["raw_output"]["pred_keypoints_2d"]
                         result = run(reference, driving)
-                        self.assertEqual(result[:2], baseline[:2])
+                        self.assertEqual(result[0], baseline[0])
                         for side, missing in (("reference", ref_missing),
                                               ("driving", drive_missing)):
                             self.assertEqual(
-                                f"{side}_height=unavailable" in result[2], missing)
+                                f"{side}_height=unavailable" in result[1], missing)
                             self.assertEqual(
-                                f"WARNING: {side}_height unavailable:" in result[2],
+                                f"WARNING: {side}_height unavailable:" in result[1],
                                 missing)
                         if raw_missing:
-                            self.assertEqual(result[3], [{
-                                "canvas_width": 384, "canvas_height": 512,
-                                "people": [],
-                            }])
-                            self.assertIn("sam_raw_driving_pose_keypoint unavailable:",
-                                          result[2])
+                            self.assertIn("sam_raw_driving_2d unavailable:",
+                                          result[1])
                             self.assertIn("right_hand_raw2d_vs_reprojected: unavailable",
-                                          result[2])
-                        else:
-                            self.assertEqual(result[3], baseline[3])
+                                          result[1])
 
     def test_unusable_optional_arrays_do_not_block_pose_generation(self):
         node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
@@ -746,10 +771,10 @@ class SAM3DRetargetTests(unittest.TestCase):
                 reference["joint_coords"] = rig
                 driving["raw_output"]["pred_keypoints_2d"] = raw
                 result = run(reference, driving)
-                self.assertEqual(result[:2], baseline[:2])
-                self.assertIn("reference_height=unavailable", result[2])
-                self.assertNotIn("driving_height=unavailable", result[2])
-                self.assertEqual(result[3][0]["people"], [])
+                self.assertEqual(result[0], baseline[0])
+                self.assertIn("reference_height=unavailable", result[1])
+                self.assertNotIn("driving_height=unavailable", result[1])
+                self.assertIn("sam_raw_driving_2d unavailable", result[1])
 
     def test_missing_optional_data_does_not_hide_required_input_errors(self):
         node = load_package().NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]()
@@ -785,13 +810,9 @@ class SAM3DRetargetTests(unittest.TestCase):
         node_class = package.NODE_CLASS_MAPPINGS["SAM3DBodyPoseRetarget"]
         self.assertEqual(
             node_class.RETURN_NAMES,
-            (
-                "pose_keypoint",
-                "driving_pose_keypoint",
-                "report",
-                "sam_raw_driving_pose_keypoint",
-            ),
+            ("pose_keypoint", "report"),
         )
+        self.assertEqual(node_class.RETURN_TYPES, ("POSE_KEYPOINT", "STRING"))
         for name in (
                 "torso_scale", "shoulder_width_scale", "hip_width_scale",
                 "neck_scale", "upper_arm_scale", "forearm_scale",
